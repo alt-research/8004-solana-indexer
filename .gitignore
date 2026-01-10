@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Prisma
+prisma/migrations/**/migration_lock.toml
+
+# Test coverage
+coverage/
+
+# Docker volumes (if mounted locally)
+postgres-data/

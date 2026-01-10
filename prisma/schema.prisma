@@ -1,0 +1,175 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Agent identity (Core asset)
+model Agent {
+  id         String   @id // asset pubkey (base58)
+  owner      String   // current owner pubkey
+  wallet     String?  // agent operational wallet (optional)
+  uri        String   // agent URI (IPFS/Arweave/HTTP)
+  nftName    String   // NFT display name
+  collection String   // collection pubkey
+  registry   String   // registry config pubkey
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  // Transaction reference
+  createdTxSignature String?
+  createdSlot        BigInt?
+
+  // Relations
+  metadata    AgentMetadata[]
+  feedbacks   Feedback[]
+  validations Validation[]
+
+  @@index([owner])
+  @@index([collection])
+  @@index([registry])
+}
+
+// Agent metadata entries (individual PDAs)
+model AgentMetadata {
+  id        String  @id @default(uuid())
+  agentId   String
+  key       String  // metadata key (max 32 bytes)
+  value     Bytes   // metadata value (max 256 bytes)
+  immutable Boolean @default(false)
+
+  // Transaction reference
+  txSignature String?
+  slot        BigInt?
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, key])
+  @@index([agentId])
+}
+
+// Client feedback to agents
+model Feedback {
+  id            String   @id @default(uuid())
+  agentId       String
+  client        String   // client pubkey
+  feedbackIndex BigInt   // on-chain index
+  score         Int      // 0-100
+  tag1          String   // category tag 1
+  tag2          String   // category tag 2
+  endpoint      String   // endpoint used
+  feedbackUri   String   // URI to detailed feedback
+  feedbackHash  Bytes    // SHA-256 hash of content
+  revoked       Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  // Transaction references
+  createdTxSignature String?
+  createdSlot        BigInt?
+  revokedTxSignature String?
+  revokedSlot        BigInt?
+
+  agent     Agent              @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  responses FeedbackResponse[]
+
+  @@unique([agentId, feedbackIndex])
+  @@index([agentId])
+  @@index([client])
+  @@index([score])
+  @@index([tag1])
+  @@index([tag2])
+}
+
+// Agent responses to feedback
+model FeedbackResponse {
+  id           String   @id @default(uuid())
+  feedbackId   String
+  responder    String   // who responded (agent owner or wallet)
+  responseUri  String   // URI to response content
+  responseHash Bytes    // SHA-256 hash of content
+  createdAt    DateTime @default(now())
+
+  // Transaction reference
+  txSignature String?
+  slot        BigInt?
+
+  feedback Feedback @relation(fields: [feedbackId], references: [id], onDelete: Cascade)
+
+  @@index([feedbackId])
+}
+
+// Validation requests and responses
+model Validation {
+  id           String    @id @default(uuid())
+  agentId      String
+  validator    String    // validator pubkey
+  requester    String    // who requested validation
+  nonce        Int       // unique nonce for this agent+validator
+  requestUri   String    // URI to validation request
+  requestHash  Bytes     // SHA-256 hash of request
+  response     Int?      // validator response (0-100, null if pending)
+  responseUri  String?   // URI to response
+  responseHash Bytes?    // SHA-256 hash of response
+  tag          String?   // validation tag/category
+  createdAt    DateTime  @default(now())
+  respondedAt  DateTime?
+
+  // Transaction references
+  requestTxSignature  String?
+  requestSlot         BigInt?
+  responseTxSignature String?
+  responseSlot        BigInt?
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, validator, nonce])
+  @@index([agentId])
+  @@index([validator])
+  @@index([requester])
+}
+
+// Registry configurations (Base and User)
+model Registry {
+  id           String   @id // registry config pubkey
+  collection   String   @unique // collection pubkey
+  registryType String   // "Base" | "User"
+  authority    String   // authority pubkey
+  baseIndex    Int?     // only for Base type
+  createdAt    DateTime @default(now())
+
+  // Transaction reference
+  txSignature String?
+  slot        BigInt?
+
+  @@index([registryType])
+  @@index([authority])
+}
+
+// Indexer state for cursor management
+model IndexerState {
+  id            String   @id @default("main")
+  lastSignature String?  // last processed transaction signature
+  lastSlot      BigInt?  // last processed slot
+  updatedAt     DateTime @updatedAt
+}
+
+// Event log for debugging and replay
+model EventLog {
+  id          String   @id @default(uuid())
+  eventType   String   // event discriminator name
+  signature   String   // transaction signature
+  slot        BigInt
+  blockTime   DateTime
+  data        Json     // raw event data
+  processed   Boolean  @default(false)
+  error       String?  // error message if processing failed
+  createdAt   DateTime @default(now())
+
+  @@index([eventType])
+  @@index([signature])
+  @@index([slot])
+  @@index([processed])
+}

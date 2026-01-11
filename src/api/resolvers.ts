@@ -225,7 +225,7 @@ export const resolvers = {
           OR: [
             { id: { contains: query } },
             { owner: { contains: query } },
-            { nftName: { contains: query, mode: "insensitive" } },
+            { nftName: { contains: query } },
           ],
         },
         take: limit || 10,

@@ -26,8 +26,11 @@ logs/
 # Prisma
 prisma/migrations/**/migration_lock.toml
 
+# SQLite database
+data/
+*.db
+*.db-journal
+
 # Test coverage
 coverage/
 
-# Docker volumes (if mounted locally)
-postgres-data/

@@ -3,10 +3,8 @@ import "dotenv/config";
 export type IndexerMode = "auto" | "polling" | "websocket";
 
 export const config = {
-  // Database
-  databaseUrl:
-    process.env.DATABASE_URL ||
-    "postgresql://postgres:postgres@localhost:5432/indexer8004?schema=public",
+  // Database (SQLite by default, no external dependency)
+  databaseUrl: process.env.DATABASE_URL || "file:./data/indexer.db",
 
   // Solana RPC (works with any provider)
   rpcUrl: process.env.RPC_URL || "https://api.devnet.solana.com",

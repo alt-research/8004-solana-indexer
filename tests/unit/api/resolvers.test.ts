@@ -519,7 +519,7 @@ describe("GraphQL Resolvers", () => {
               OR: [
                 { id: { contains: "test" } },
                 { owner: { contains: "test" } },
-                { nftName: { contains: "test", mode: "insensitive" } },
+                { nftName: { contains: "test" } },
               ],
             },
             take: 5,

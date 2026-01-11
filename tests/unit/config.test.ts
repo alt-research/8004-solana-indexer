@@ -29,7 +29,7 @@ describe("Config", () => {
 
       const { config } = await import("../../src/config.js");
 
-      expect(config.databaseUrl).toContain("postgresql://");
+      expect(config.databaseUrl).toBe("file:./data/indexer.db");
       expect(config.rpcUrl).toBe("https://api.devnet.solana.com");
       expect(config.wsUrl).toBe("wss://api.devnet.solana.com");
       expect(config.programId).toBe("3GGkAWC3mYYdud8GVBsKXK5QC9siXtFkWVZFYtbueVbC");
@@ -81,7 +81,7 @@ describe("Config", () => {
 
   describe("validateConfig", () => {
     it("should pass validation with valid config", async () => {
-      process.env.DATABASE_URL = "postgresql://test:test@localhost/test";
+      process.env.DATABASE_URL = "file:./data/test.db";
       process.env.RPC_URL = "https://api.devnet.solana.com";
       process.env.PROGRAM_ID = "TestProgramId";
       process.env.INDEXER_MODE = "auto";
@@ -92,7 +92,7 @@ describe("Config", () => {
     });
 
     it("should throw when INDEXER_MODE is invalid", async () => {
-      process.env.DATABASE_URL = "postgresql://test:test@localhost/test";
+      process.env.DATABASE_URL = "file:./data/test.db";
       process.env.RPC_URL = "https://api.devnet.solana.com";
       process.env.PROGRAM_ID = "TestProgramId";
       process.env.INDEXER_MODE = "invalid";

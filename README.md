@@ -8,174 +8,102 @@ A lightweight, self-hosted Solana indexer for the [8004 Agent Registry](https://
 - **14 Anchor event types** indexed (Identity, Reputation, Validation)
 - **GraphQL API** with built-in GraphiQL explorer
 - **Works with any Solana RPC** (Helius, QuickNode, public devnet)
-- **Self-hosted**: PostgreSQL + Node.js, no external dependencies
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     8004-solana-indexer                     │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐  │
-│  │   Indexer    │───▶│  PostgreSQL  │◀───│  GraphQL API │  │
-│  │  (Node.js)   │    │   (Prisma)   │    │    (Yoga)    │  │
-│  └──────────────┘    └──────────────┘    └──────────────┘  │
-│         │                                       │           │
-│         ▼                                       ▼           │
-│  ┌──────────────┐                      ┌──────────────┐    │
-│  │  Any Solana  │                      │   Clients    │    │
-│  │     RPC      │                      │  (Web/Apps)  │    │
-│  └──────────────┘                      └──────────────┘    │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+- **Zero external dependencies**: SQLite included, just Node.js required
 
 ## Quick Start
 
-### Prerequisites
-
-- Node.js 20+
-- **PostgreSQL 14+** (local install) OR **Docker** (recommended for easy setup)
-- A Solana RPC endpoint (devnet/mainnet)
-
-### Installation
-
 ```bash
-# Clone the repository
+# Clone and install
 git clone https://github.com/QuantuLabs/8004-solana-indexer.git
 cd 8004-solana-indexer
-
-# Install dependencies
 npm install
 
-# Generate Prisma client
-npm run db:generate
-
-# Copy environment file
+# Setup
 cp .env.example .env
-```
-
-### Database Setup
-
-**Option A: Using Docker (Recommended)**
-
-```bash
-# Make sure Docker Desktop is running first!
-# Then start PostgreSQL:
-docker run -d \
-  --name indexer8004-db \
-  -e POSTGRES_USER=postgres \
-  -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=indexer8004 \
-  -p 5432:5432 \
-  postgres:16-alpine
-
-# Wait a few seconds for PostgreSQL to start, then run migrations:
+npm run db:generate
 npm run db:push
+
+# Run
+npm run dev
 ```
 
-**Option B: Using local PostgreSQL**
+GraphQL API available at `http://localhost:4000/graphql`
 
-```bash
-# If you have PostgreSQL installed locally:
-createdb indexer8004
-npm run db:push
-```
+## Configuration
 
-### Configuration
-
-The `.env` file contains all configuration options:
+Edit `.env` to customize:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql://postgres:postgres@localhost:5432/indexer8004` |
+| `DATABASE_URL` | Database path | `file:./data/indexer.db` (SQLite) |
 | `RPC_URL` | Solana RPC HTTP endpoint | `https://api.devnet.solana.com` |
 | `WS_URL` | Solana RPC WebSocket endpoint | `wss://api.devnet.solana.com` |
 | `PROGRAM_ID` | 8004 Agent Registry program ID | `3GGkAWC3mYYdud8GVBsKXK5QC9siXtFkWVZFYtbueVbC` |
 | `INDEXER_MODE` | `auto`, `polling`, or `websocket` | `auto` |
 | `GRAPHQL_PORT` | GraphQL server port | `4000` |
 
-### Running
+### Using PostgreSQL (optional)
 
-```bash
-# Development (with hot reload)
-npm run dev
+If you prefer PostgreSQL over SQLite:
 
-# Production
-npm run build
-npm start
-```
-
-The GraphQL API will be available at `http://localhost:4000/graphql`
+1. Install PostgreSQL on your system
+2. Create a database: `createdb indexer8004`
+3. Update `.env`:
+   ```
+   DATABASE_URL="postgresql://user:pass@localhost:5432/indexer8004"
+   ```
+4. Change `prisma/schema.prisma`:
+   ```prisma
+   datasource db {
+     provider = "postgresql"
+     url      = env("DATABASE_URL")
+   }
+   ```
+5. Run `npm run db:generate && npm run db:push`
 
 ## GraphQL API
 
 ### Example Queries
 
 ```graphql
-# Get all agents with their feedback stats
-query GetAgents {
+# Get all agents
+query {
   agents(limit: 10, orderBy: CREATED_AT_DESC) {
     id
     owner
     nftName
-    uri
     feedbackCount
     averageScore
   }
 }
 
-# Get agent with feedbacks and validations
-query GetAgent($id: ID!) {
-  agent(id: $id) {
+# Get agent details
+query {
+  agent(id: "AgentPubkeyHere") {
     id
     owner
     nftName
-    metadata {
-      key
-      value
-    }
+    metadata { key value }
     feedbacks(limit: 5) {
       score
       tag1
-      tag2
       client
-      responses {
-        responder
-        responseUri
-      }
-    }
-    validations(pending: true) {
-      validator
-      nonce
-      requestUri
     }
   }
 }
 
-# Get indexer status
-query GetStatus {
+# Indexer status
+query {
   stats {
     totalAgents
     totalFeedbacks
     totalValidations
-    lastProcessedSignature
   }
   indexerStatus {
     running
     mode
     pollerActive
     wsActive
-  }
-}
-
-# Search agents
-query SearchAgents {
-  searchAgents(query: "my-agent", limit: 5) {
-    id
-    nftName
-    owner
   }
 }
 ```
@@ -186,160 +114,49 @@ query SearchAgents {
 |-------|-------------|
 | `agent(id)` | Get single agent by ID |
 | `agents(owner, collection, registry, limit, offset, orderBy)` | List agents with filters |
-| `feedback(id)` | Get single feedback |
 | `feedbacks(agentId, client, minScore, maxScore, tag, revoked)` | List feedbacks |
-| `validation(id)` | Get single validation |
 | `validations(agentId, validator, requester, pending)` | List validations |
 | `registries(registryType, authority)` | List registries |
 | `stats` | Indexer statistics |
 | `indexerStatus` | Indexer health status |
-| `searchAgents(query, limit)` | Search agents by ID, owner, or name |
+| `searchAgents(query, limit)` | Search agents |
 
 ## Indexed Events
 
-### Identity Events
-| Event | Description |
-|-------|-------------|
-| `AgentRegisteredInRegistry` | New agent created |
-| `AgentOwnerSynced` | Agent ownership changed |
-| `UriUpdated` | Agent URI updated |
-| `WalletUpdated` | Agent wallet updated |
-| `MetadataSet` | Metadata key/value set |
-| `MetadataDeleted` | Metadata key deleted |
-| `BaseRegistryCreated` | Base registry created |
-| `UserRegistryCreated` | User registry created |
-| `BaseRegistryRotated` | Base registry rotated |
-
-### Reputation Events
-| Event | Description |
-|-------|-------------|
-| `NewFeedback` | Client submitted feedback |
-| `FeedbackRevoked` | Feedback was revoked |
-| `ResponseAppended` | Agent responded to feedback |
-
-### Validation Events
-| Event | Description |
-|-------|-------------|
-| `ValidationRequested` | Validation request created |
-| `ValidationResponded` | Validator submitted response |
+| Category | Events |
+|----------|--------|
+| **Identity** | AgentRegisteredInRegistry, AgentOwnerSynced, UriUpdated, WalletUpdated, MetadataSet, MetadataDeleted, BaseRegistryCreated, UserRegistryCreated, BaseRegistryRotated |
+| **Reputation** | NewFeedback, FeedbackRevoked, ResponseAppended |
+| **Validation** | ValidationRequested, ValidationResponded |
 
 ## Development
+
+```bash
+npm test              # Run unit tests
+npm run test:coverage # Tests with coverage
+npm run db:studio     # Open Prisma Studio GUI
+```
 
 ### Project Structure
 
 ```
-├── src/
-│   ├── api/           # GraphQL server and resolvers
-│   ├── db/            # Database handlers
-│   ├── indexer/       # Poller, WebSocket, Processor
-│   ├── parser/        # Anchor event decoder
-│   ├── config.ts      # Configuration
-│   ├── logger.ts      # Pino logger
-│   └── index.ts       # Entry point
-├── prisma/
-│   └── schema.prisma  # Database schema
-├── idl/
-│   └── agent_registry_8004.json  # Anchor IDL
-└── tests/
-    ├── unit/          # Unit tests
-    ├── mocks/         # Test mocks
-    └── e2e/           # End-to-end tests
+src/
+├── api/        # GraphQL server and resolvers
+├── db/         # Database handlers
+├── indexer/    # Poller, WebSocket, Processor
+├── parser/     # Anchor event decoder
+├── config.ts   # Configuration
+└── index.ts    # Entry point
 ```
 
-### Testing
-
-```bash
-# Run unit tests
-npm test
-
-# Run tests with coverage
-npm run test:coverage
-
-# Run e2e tests (requires database)
-npm run test:e2e
-
-# Run all tests
-npm run test:all
-```
-
-### Database Management
-
-```bash
-# Open Prisma Studio (GUI)
-npm run db:studio
-
-# Create migration
-npm run db:migrate
-
-# Reset database
-npx prisma migrate reset
-```
-
-## Docker Compose
-
-For running the full stack with Docker Compose:
-
-```bash
-# Start PostgreSQL only (use 'docker compose' or 'docker-compose' depending on your setup)
-docker compose up -d postgres
-# or: docker-compose up -d postgres
-
-# Start full stack (indexer + PostgreSQL)
-docker compose up -d
-# or: docker-compose up -d
-
-# View logs
-docker compose logs -f indexer
-
-# Stop all services
-docker compose down
-```
-
-> **Note**: Make sure Docker Desktop is running before executing these commands.
-
-## Troubleshooting
-
-### Database connection errors
-
-**Error: `P1010: User was denied access on the database`**
-- This usually means PostgreSQL is not running
-- If using Docker: make sure Docker Desktop is running, then start the container
-- If using local PostgreSQL: check that the service is running (`pg_isready -h localhost -p 5432`)
-
-**Error: `Cannot connect to the Docker daemon`**
-- Open Docker Desktop application and wait for it to start
-- On macOS, look for the Docker icon in the menu bar
-
-### Port already in use
-
-**Error: `Port 5432 is already in use`**
-- Another PostgreSQL instance is running
-- Stop it with: `docker stop indexer8004-db` or stop your local PostgreSQL service
-
-**Error: `Port 4000 is already in use`**
-- Change `GRAPHQL_PORT` in your `.env` file to a different port
-
-## RPC Provider Compatibility
+## RPC Providers
 
 | Provider | Polling | WebSocket | Notes |
 |----------|---------|-----------|-------|
 | Helius | ✅ | ✅ | Recommended (1M free credits) |
 | QuickNode | ✅ | ✅ | Paid plans |
-| Triton | ✅ | ✅ | High performance |
 | Alchemy | ✅ | ✅ | Free tier available |
 | Solana Public | ✅ | ✅ | Rate limited |
-
-## Tech Stack
-
-| Component | Technology |
-|-----------|------------|
-| Runtime | Node.js 20+ |
-| Language | TypeScript |
-| Database | PostgreSQL |
-| ORM | Prisma |
-| GraphQL | GraphQL Yoga |
-| Parser | @coral-xyz/anchor |
-| Logging | Pino |
 
 ## License
 
@@ -347,5 +164,5 @@ MIT
 
 ## Related
 
-- [8004-solana](https://github.com/QuantuLabs/8004-solana) - Solana program implementation
-- [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) - AI Agent Identity & Reputation Registry specification
+- [8004-solana](https://github.com/QuantuLabs/8004-solana) - Solana program
+- [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) - Specification

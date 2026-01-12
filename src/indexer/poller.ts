@@ -59,12 +59,16 @@ export class Poller {
 
   /**
    * Backfill all historical transactions from the program
-   * Paginates backwards from most recent to oldest
+   * Step 1: Fetch ALL signatures backwards (newest to oldest)
+   * Step 2: Reverse to get chronological order (oldest to newest)
+   * Step 3: Process in order
    */
   private async backfill(): Promise<void> {
-    logger.info("Starting historical backfill...");
+    logger.info("Starting historical backfill - collecting all signatures...");
+
+    // Step 1: Collect ALL signatures (newest to oldest)
+    const allSignatures: ConfirmedSignatureInfo[] = [];
     let beforeSignature: string | undefined = undefined;
-    let totalProcessed = 0;
 
     while (this.isRunning) {
       const options: { limit: number; before?: string } = {
@@ -82,32 +86,49 @@ export class Poller {
       const validSigs = signatures.filter((sig) => sig.err === null);
 
       if (validSigs.length === 0) {
-        logger.info({ totalProcessed }, "Backfill complete - no more transactions");
         break;
       }
 
-      logger.info({ count: validSigs.length, totalProcessed }, "Backfill batch");
+      allSignatures.push(...validSigs);
+      logger.info({ fetched: validSigs.length, total: allSignatures.length }, "Fetched backfill batch");
 
-      // Process oldest first (reverse order)
-      for (const sig of validSigs.reverse()) {
-        try {
-          await this.processTransaction(sig);
-          this.lastSignature = sig.signature;
-          await this.saveState(sig.signature, BigInt(sig.slot));
-          totalProcessed++;
-        } catch (error) {
-          logger.error({ error, signature: sig.signature }, "Error processing backfill transaction");
-        }
-      }
-
-      // Use the oldest signature from this batch to get the next older batch
+      // Move to older signatures
       beforeSignature = validSigs[validSigs.length - 1].signature;
 
+      // If we got fewer than requested, we've reached the end
+      if (signatures.length < this.batchSize) {
+        break;
+      }
+
       // Small delay to avoid rate limiting
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 200));
     }
 
-    logger.info({ totalProcessed }, "Backfill finished, switching to live polling");
+    logger.info({ total: allSignatures.length }, "All signatures collected, processing oldest to newest...");
+
+    // Step 2: Reverse to get chronological order (oldest first)
+    allSignatures.reverse();
+
+    // Step 3: Process in chronological order
+    let processed = 0;
+    for (const sig of allSignatures) {
+      if (!this.isRunning) break;
+
+      try {
+        await this.processTransaction(sig);
+        this.lastSignature = sig.signature;
+        await this.saveState(sig.signature, BigInt(sig.slot));
+        processed++;
+
+        if (processed % 10 === 0) {
+          logger.info({ processed, total: allSignatures.length }, "Backfill progress");
+        }
+      } catch (error) {
+        logger.error({ error, signature: sig.signature }, "Error processing backfill transaction");
+      }
+    }
+
+    logger.info({ processed, total: allSignatures.length }, "Backfill finished, switching to live polling");
   }
 
   async stop(): Promise<void> {

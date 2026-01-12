@@ -93,7 +93,6 @@ export async function handleEvent(
   }
 }
 
-// Agent handlers
 async function handleAgentRegistered(
   prisma: PrismaClient,
   data: AgentRegisteredInRegistry,
@@ -106,15 +105,14 @@ async function handleAgentRegistered(
     create: {
       id: assetId,
       owner: data.owner.toBase58(),
-      uri: "", // Will be set by UriUpdated event or fetched from chain
-      nftName: "", // Could fetch from Metaplex Core
+      uri: "",
+      nftName: "",
       collection: data.collection.toBase58(),
       registry: data.registry.toBase58(),
       createdTxSignature: ctx.signature,
       createdSlot: ctx.slot,
     },
     update: {
-      // If agent already exists, update registry/collection
       collection: data.collection.toBase58(),
       registry: data.registry.toBase58(),
     },
@@ -187,7 +185,6 @@ async function handleWalletUpdated(
   );
 }
 
-// Metadata handlers
 async function handleMetadataSet(
   prisma: PrismaClient,
   data: MetadataSet,
@@ -212,7 +209,7 @@ async function handleMetadataSet(
     },
     update: {
       value: Buffer.from(data.value),
-      // Don't update immutable flag - once set to true, it stays
+      // Immutable flag stays true once set
       txSignature: ctx.signature,
       slot: ctx.slot,
     },
@@ -238,7 +235,6 @@ async function handleMetadataDeleted(
   logger.info({ assetId, key: data.key }, "Metadata deleted");
 }
 
-// Registry handlers
 async function handleBaseRegistryCreated(
   prisma: PrismaClient,
   data: BaseRegistryCreated,
@@ -288,7 +284,6 @@ async function handleUserRegistryCreated(
   );
 }
 
-// Feedback handlers
 async function handleNewFeedback(
   prisma: PrismaClient,
   data: NewFeedback,
@@ -361,7 +356,6 @@ async function handleResponseAppended(
 ): Promise<void> {
   const assetId = data.asset.toBase58();
 
-  // Find the feedback
   const feedback = await prisma.feedback.findUnique({
     where: {
       agentId_feedbackIndex: {
@@ -396,7 +390,6 @@ async function handleResponseAppended(
   );
 }
 
-// Validation handlers
 async function handleValidationRequested(
   prisma: PrismaClient,
   data: ValidationRequested,

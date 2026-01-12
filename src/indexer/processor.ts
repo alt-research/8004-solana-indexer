@@ -24,8 +24,6 @@ export class Processor {
     this.prisma = prisma;
     this.mode = options?.mode || config.indexerMode;
     this.programId = new PublicKey(config.programId);
-
-    // Create connection
     this.connection = new Connection(config.rpcUrl, {
       wsEndpoint: config.wsUrl,
       commitment: "confirmed",
@@ -93,28 +91,22 @@ export class Processor {
   }
 
   private async startAuto(): Promise<void> {
-    // Test WebSocket availability
     logger.info("Testing WebSocket connection...");
     const wsAvailable = await testWebSocketConnection(config.wsUrl);
 
     if (wsAvailable) {
       logger.info("WebSocket available, using WebSocket mode");
-
-      // Start WebSocket indexer
       await this.startWebSocket();
 
-      // Also start poller as backup for catching up missed events
+      // Backup poller for catching missed events (slower interval when WS is primary)
       this.poller = new Poller({
         connection: this.connection,
         prisma: this.prisma,
         programId: this.programId,
-        // Slower polling when WS is primary
-        pollingInterval: 30000, // 30 seconds
+        pollingInterval: 30000,
       });
-
       await this.poller.start();
 
-      // Monitor WebSocket health
       this.monitorWebSocket();
     } else {
       logger.info("WebSocket not available, falling back to polling mode");
@@ -129,19 +121,19 @@ export class Processor {
       if (this.wsIndexer && !this.wsIndexer.isActive()) {
         logger.warn("WebSocket connection lost, relying on polling");
 
-        // Speed up polling if WS is down
+        // Switch to faster polling when WS is down
         if (this.poller) {
           await this.poller.stop();
           this.poller = new Poller({
             connection: this.connection,
             prisma: this.prisma,
             programId: this.programId,
-            pollingInterval: config.pollingInterval, // Back to normal interval
+            pollingInterval: config.pollingInterval,
           });
           await this.poller.start();
         }
       }
-    }, 10000); // Check every 10 seconds
+    }, 10000);
   }
 
   getStatus(): {

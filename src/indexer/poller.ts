@@ -45,10 +45,7 @@ export class Poller {
     this.isRunning = true;
     logger.info({ programId: this.programId.toBase58() }, "Starting poller");
 
-    // Load last signature from DB
     await this.loadState();
-
-    // Start polling loop
     this.poll();
   }
 
@@ -93,7 +90,6 @@ export class Poller {
         logger.error({ error }, "Error in polling loop");
       }
 
-      // Wait before next poll
       await new Promise((resolve) =>
         setTimeout(resolve, this.pollingInterval)
       );
@@ -101,7 +97,6 @@ export class Poller {
   }
 
   private async processNewTransactions(): Promise<void> {
-    // Fetch new signatures
     const signatures = await this.fetchSignatures();
 
     if (signatures.length === 0) {
@@ -111,7 +106,7 @@ export class Poller {
 
     logger.info({ count: signatures.length }, "Processing transactions");
 
-    // Process in reverse order (oldest first)
+    // Process oldest first
     for (const sig of signatures.reverse()) {
       try {
         await this.processTransaction(sig);
@@ -122,7 +117,6 @@ export class Poller {
           { error, signature: sig.signature },
           "Error processing transaction"
         );
-        // Log to event log for retry
         await this.logFailedTransaction(sig, error);
       }
     }
@@ -137,7 +131,6 @@ export class Poller {
       limit: this.batchSize,
     };
 
-    // If we have a last signature, only fetch newer ones
     if (this.lastSignature) {
       options.until = this.lastSignature;
     }
@@ -147,12 +140,10 @@ export class Poller {
       options
     );
 
-    // Filter out failed transactions
     return signatures.filter((sig) => sig.err === null);
   }
 
   private async processTransaction(sig: ConfirmedSignatureInfo): Promise<void> {
-    // Fetch full transaction
     const tx = await this.connection.getParsedTransaction(sig.signature, {
       maxSupportedTransactionVersion: 0,
     });
@@ -162,7 +153,6 @@ export class Poller {
       return;
     }
 
-    // Parse events
     const parsed = parseTransaction(tx);
     if (!parsed || parsed.events.length === 0) {
       return;
@@ -173,7 +163,6 @@ export class Poller {
       "Parsed transaction"
     );
 
-    // Process each event
     for (const event of parsed.events) {
       const typedEvent = toTypedEvent(event);
       if (!typedEvent) continue;
@@ -188,7 +177,6 @@ export class Poller {
 
       await handleEvent(this.prisma, typedEvent, ctx);
 
-      // Log event for debugging/replay
       await this.prisma.eventLog.create({
         data: {
           eventType: typedEvent.type,

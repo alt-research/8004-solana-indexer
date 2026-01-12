@@ -5,7 +5,6 @@ import { Processor } from "./indexer/processor.js";
 import { createGraphQLServer } from "./api/server.js";
 
 async function main() {
-  // Validate configuration
   try {
     validateConfig();
   } catch (error) {
@@ -22,11 +21,9 @@ async function main() {
     "Starting 8004 Solana Indexer"
   );
 
-  // Initialize Prisma client
   const prisma = new PrismaClient();
 
   try {
-    // Test database connection
     await prisma.$connect();
     logger.info("Database connected");
   } catch (error) {
@@ -34,22 +31,12 @@ async function main() {
     process.exit(1);
   }
 
-  // Initialize processor (indexer)
   const processor = new Processor(prisma);
+  const graphqlServer = await createGraphQLServer({ prisma, processor });
 
-  // Initialize GraphQL server
-  const graphqlServer = await createGraphQLServer({
-    prisma,
-    processor,
-  });
-
-  // Start GraphQL server
   await graphqlServer.start();
-
-  // Start indexer
   await processor.start();
 
-  // Graceful shutdown
   const shutdown = async (signal: string) => {
     logger.info({ signal }, "Shutdown signal received");
 

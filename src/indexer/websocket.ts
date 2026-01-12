@@ -87,22 +87,17 @@ export class WebSocketIndexer {
     }
 
     try {
-      // Parse events from logs
       const events = parseTransactionLogs(logs.logs);
-
-      if (events.length === 0) {
-        return;
-      }
+      if (events.length === 0) return;
 
       logger.debug(
         { signature: logs.signature, eventCount: events.length },
         "Received logs"
       );
 
-      // Get block time (approximate from current time for WebSocket)
+      // Approximate block time for WebSocket events
       const blockTime = new Date();
 
-      // Process each event
       for (const event of events) {
         const typedEvent = toTypedEvent(event);
         if (!typedEvent) continue;
@@ -115,7 +110,6 @@ export class WebSocketIndexer {
 
         await handleEvent(this.prisma, typedEvent, eventCtx);
 
-        // Log event
         await this.prisma.eventLog.create({
           data: {
             eventType: typedEvent.type,
@@ -128,7 +122,6 @@ export class WebSocketIndexer {
         });
       }
 
-      // Update indexer state
       await this.prisma.indexerState.upsert({
         where: { id: "main" },
         create: {
@@ -144,7 +137,6 @@ export class WebSocketIndexer {
     } catch (error) {
       logger.error({ error, signature: logs.signature }, "Error handling logs");
 
-      // Log failure for retry
       await this.prisma.eventLog.create({
         data: {
           eventType: "PROCESSING_FAILED",
@@ -186,19 +178,13 @@ export class WebSocketIndexer {
   }
 }
 
-/**
- * Test if WebSocket connection is available
- */
 export async function testWebSocketConnection(wsUrl: string): Promise<boolean> {
   try {
     const connection = new Connection(wsUrl, {
       wsEndpoint: wsUrl,
       commitment: "confirmed",
     });
-
-    // Try to get slot to verify connection
     await connection.getSlot();
-
     return true;
   } catch (error) {
     logger.debug({ error }, "WebSocket connection test failed");

@@ -12,11 +12,8 @@ const logger = createChildLogger("decoder");
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Load IDL
 const idlPath = join(__dirname, "../../idl/agent_registry_8004.json");
 const idl: Idl = JSON.parse(readFileSync(idlPath, "utf-8"));
-
-// Create coder and event parser
 const coder = new BorshCoder(idl);
 const eventParser = new EventParser(new PublicKey(config.programId), coder);
 

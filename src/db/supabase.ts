@@ -469,18 +469,21 @@ export interface IndexerState {
  * Load indexer state (cursor) from Supabase
  */
 export async function loadIndexerState(): Promise<IndexerState> {
-  const db = getPool();
+  logger.info("Loading indexer state from Supabase...");
   try {
+    const db = getPool();
     const result = await db.query(
       `SELECT last_signature, last_slot FROM indexer_state WHERE id = 'main'`
     );
     if (result.rows.length > 0) {
       const row = result.rows[0];
+      logger.info({ lastSignature: row.last_signature, lastSlot: row.last_slot }, "Loaded indexer state");
       return {
         lastSignature: row.last_signature,
         lastSlot: row.last_slot ? BigInt(row.last_slot) : null,
       };
     }
+    logger.info("No saved indexer state found");
   } catch (error: any) {
     logger.warn({ error: error.message }, "Failed to load indexer state (table may not exist)");
   }

@@ -7,6 +7,7 @@ import { PrismaClient } from "@prisma/client";
 import { config } from "../config.js";
 import { parseTransaction, toTypedEvent } from "../parser/decoder.js";
 import { handleEvent, EventContext } from "../db/handlers.js";
+import { loadIndexerState, saveIndexerState } from "../db/supabase.js";
 import { createChildLogger } from "../logger.js";
 
 const logger = createChildLogger("poller");
@@ -55,12 +56,19 @@ export class Poller {
   }
 
   private async loadState(): Promise<void> {
-    // Only load state from Prisma in local mode
+    // Supabase mode - load from Supabase
     if (!this.prisma) {
-      logger.info("Supabase mode: starting from latest transactions");
+      const state = await loadIndexerState();
+      if (state.lastSignature) {
+        this.lastSignature = state.lastSignature;
+        logger.info({ lastSignature: this.lastSignature, lastSlot: state.lastSlot?.toString() }, "Supabase mode: resuming from signature");
+      } else {
+        logger.info("Supabase mode: starting from latest transactions (no saved state)");
+      }
       return;
     }
 
+    // Local mode - load from Prisma
     const state = await this.prisma.indexerState.findUnique({
       where: { id: "main" },
     });
@@ -74,9 +82,13 @@ export class Poller {
   }
 
   private async saveState(signature: string, slot: bigint): Promise<void> {
-    // Only save state to Prisma in local mode
-    if (!this.prisma) return;
+    // Supabase mode - save to Supabase
+    if (!this.prisma) {
+      await saveIndexerState(signature, slot);
+      return;
+    }
 
+    // Local mode - save to Prisma
     await this.prisma.indexerState.upsert({
       where: { id: "main" },
       create: {

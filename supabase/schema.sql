@@ -193,6 +193,16 @@ CREATE TABLE atom_config (
 );
 
 -- =============================================
+-- INDEXER_STATE (cursor persistence)
+-- =============================================
+CREATE TABLE indexer_state (
+  id TEXT PRIMARY KEY DEFAULT 'main',
+  last_signature TEXT,
+  last_slot BIGINT,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- =============================================
 -- VIEWS (for API)
 -- =============================================
 
@@ -308,6 +318,7 @@ ALTER TABLE feedbacks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE feedback_responses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE validations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE atom_config ENABLE ROW LEVEL SECURITY;
+ALTER TABLE indexer_state ENABLE ROW LEVEL SECURITY;
 
 -- Public read access
 CREATE POLICY "Public read agents" ON agents FOR SELECT USING (true);

@@ -455,3 +455,54 @@ async function handleValidationResponded(
     logger.error({ error: error.message, assetId, nonce: data.nonce }, "Failed to respond to validation");
   }
 }
+
+// =============================================
+// INDEXER STATE PERSISTENCE
+// =============================================
+
+export interface IndexerState {
+  lastSignature: string | null;
+  lastSlot: bigint | null;
+}
+
+/**
+ * Load indexer state (cursor) from Supabase
+ */
+export async function loadIndexerState(): Promise<IndexerState> {
+  const db = getPool();
+  try {
+    const result = await db.query(
+      `SELECT last_signature, last_slot FROM indexer_state WHERE id = 'main'`
+    );
+    if (result.rows.length > 0) {
+      const row = result.rows[0];
+      return {
+        lastSignature: row.last_signature,
+        lastSlot: row.last_slot ? BigInt(row.last_slot) : null,
+      };
+    }
+  } catch (error: any) {
+    logger.warn({ error: error.message }, "Failed to load indexer state (table may not exist)");
+  }
+  return { lastSignature: null, lastSlot: null };
+}
+
+/**
+ * Save indexer state (cursor) to Supabase
+ */
+export async function saveIndexerState(signature: string, slot: bigint): Promise<void> {
+  const db = getPool();
+  try {
+    await db.query(
+      `INSERT INTO indexer_state (id, last_signature, last_slot, updated_at)
+       VALUES ('main', $1, $2, NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         last_signature = EXCLUDED.last_signature,
+         last_slot = EXCLUDED.last_slot,
+         updated_at = NOW()`,
+      [signature, Number(slot)]
+    );
+  } catch (error: any) {
+    logger.error({ error: error.message }, "Failed to save indexer state");
+  }
+}

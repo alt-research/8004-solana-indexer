@@ -19,9 +19,9 @@ export const config = {
   rpcUrl: process.env.RPC_URL || "https://api.devnet.solana.com",
   wsUrl: process.env.WS_URL || "wss://api.devnet.solana.com",
 
-  // Program ID (8004 Agent Registry v0.4.0)
+  // Program ID (8004 Agent Registry v0.5.0)
   programId:
-    process.env.PROGRAM_ID || "HHCVWcqsziJMmp43u2UAgAfH2cBjUFxVdW1M3C3NqzvT",
+    process.env.PROGRAM_ID || "6MuHv4dY4p9E4hSCEPr9dgbCSpMhq8x1vrUexbMVjfw1",
 
   // Indexer mode: "auto" | "polling" | "websocket"
   // auto = tries WebSocket first, falls back to polling if unavailable

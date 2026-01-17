@@ -38,7 +38,7 @@ Edit `.env` to customize:
 | `DATABASE_URL` | Database path | `file:./data/indexer.db` (SQLite) |
 | `RPC_URL` | Solana RPC HTTP endpoint | `https://api.devnet.solana.com` |
 | `WS_URL` | Solana RPC WebSocket endpoint | `wss://api.devnet.solana.com` |
-| `PROGRAM_ID` | 8004 Agent Registry program ID | `3GGkAWC3mYYdud8GVBsKXK5QC9siXtFkWVZFYtbueVbC` |
+| `PROGRAM_ID` | 8004 Agent Registry program ID | `6MuHv4dY4p9E4hSCEPr9dgbCSpMhq8x1vrUexbMVjfw1` |
 | `INDEXER_MODE` | `auto`, `polling`, or `websocket` | `auto` |
 | `GRAPHQL_PORT` | GraphQL server port | `4000` |
 

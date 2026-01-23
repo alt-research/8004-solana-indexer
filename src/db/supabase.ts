@@ -270,7 +270,7 @@ async function handleMetadataSet(
   data: MetadataSet,
   ctx: EventContext
 ): Promise<void> {
-  // Skip reserved _uri: prefix to avoid collision with URI-derived metadata
+  // Skip _uri: prefix (reserved for indexer-derived metadata)
   if (data.key.startsWith("_uri:")) {
     logger.warn({ assetId: data.asset.toBase58(), key: data.key }, "Skipping reserved _uri: prefix");
     return;

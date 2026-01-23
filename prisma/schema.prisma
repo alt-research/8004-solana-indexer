@@ -63,7 +63,7 @@ model Feedback {
   tag2          String   // category tag 2
   endpoint      String   // endpoint used
   feedbackUri   String   // URI to detailed feedback
-  feedbackHash  Bytes    // SHA-256 hash of content
+  feedbackHash  Bytes?   // SHA-256 hash of content (null if all-zero/IPFS)
   revoked       Boolean  @default(false)
   createdAt     DateTime @default(now())
 
@@ -90,7 +90,7 @@ model FeedbackResponse {
   feedbackId   String
   responder    String   // who responded (agent owner or wallet)
   responseUri  String   // URI to response content
-  responseHash Bytes    // SHA-256 hash of content
+  responseHash Bytes?   // SHA-256 hash of content (null if all-zero/IPFS)
   createdAt    DateTime @default(now())
 
   // Transaction reference
@@ -106,6 +106,28 @@ model FeedbackResponse {
   @@index([feedbackId, responder])
 }
 
+// Orphan responses (feedback not yet indexed or from different indexer start)
+// Parity with Supabase orphan_responses table
+model OrphanResponse {
+  id            String   @id @default(uuid())
+  agentId       String   // agent asset pubkey
+  client        String   // client pubkey who gave feedback
+  feedbackIndex BigInt   // feedback index reference
+  responder     String   // who responded
+  responseUri   String   // URI to response content
+  responseHash  Bytes?   // SHA-256 hash (null if all-zero)
+  createdAt     DateTime @default(now())
+
+  // Transaction reference
+  txSignature String?
+  slot        BigInt?
+
+  // Unique per transaction to avoid duplicates
+  @@unique([agentId, client, feedbackIndex, responder, txSignature])
+  @@index([agentId])
+  @@index([agentId, client, feedbackIndex])
+}
+
 // Validation requests and responses
 model Validation {
   id           String    @id @default(uuid())
@@ -113,8 +135,8 @@ model Validation {
   validator    String    // validator pubkey
   requester    String    // who requested validation
   nonce        Int       // unique nonce for this agent+validator
-  requestUri   String    // URI to validation request
-  requestHash  Bytes     // SHA-256 hash of request
+  requestUri   String?   // URI to validation request (null if orphan response)
+  requestHash  Bytes?    // SHA-256 hash of request (null if all-zero/IPFS or orphan)
   response     Int?      // validator response (0-100, null if pending)
   responseUri  String?   // URI to response
   responseHash Bytes?    // SHA-256 hash of response

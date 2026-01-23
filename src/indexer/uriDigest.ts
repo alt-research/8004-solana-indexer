@@ -9,7 +9,35 @@ import { createChildLogger } from "../logger.js";
 
 const logger = createChildLogger("uri-digest");
 
-export type DigestStatus = "ok" | "timeout" | "error" | "oversize" | "invalid_json";
+// SSRF protection: blocked hostnames and IP patterns
+const BLOCKED_HOSTS = new Set([
+  "localhost",
+  "127.0.0.1",
+  "0.0.0.0",
+  "[::1]",
+  "metadata.google.internal",
+  "169.254.169.254", // AWS/GCP metadata
+]);
+
+const PRIVATE_IP_RANGES = [
+  /^10\./,                    // 10.0.0.0/8
+  /^172\.(1[6-9]|2[0-9]|3[01])\./, // 172.16.0.0/12
+  /^192\.168\./,              // 192.168.0.0/16
+  /^169\.254\./,              // Link-local
+  /^127\./,                   // Loopback
+  /^0\./,                     // Current network
+];
+
+function isBlockedHost(hostname: string): boolean {
+  const lower = hostname.toLowerCase();
+  if (BLOCKED_HOSTS.has(lower)) return true;
+  for (const pattern of PRIVATE_IP_RANGES) {
+    if (pattern.test(lower)) return true;
+  }
+  return false;
+}
+
+export type DigestStatus = "ok" | "timeout" | "error" | "oversize" | "invalid_json" | "blocked";
 
 export interface UriDigestResult {
   status: DigestStatus;
@@ -53,6 +81,17 @@ export async function digestUri(uri: string): Promise<UriDigestResult> {
   const fetchUrl = convertToFetchUrl(uri);
   if (!fetchUrl) {
     return { status: "error", error: "Unsupported URI scheme" };
+  }
+
+  // SSRF protection: block private/internal hosts
+  try {
+    const url = new URL(fetchUrl);
+    if (isBlockedHost(url.hostname)) {
+      logger.warn({ uri, hostname: url.hostname }, "Blocked SSRF attempt");
+      return { status: "blocked", error: "Internal host blocked" };
+    }
+  } catch {
+    return { status: "error", error: "Invalid URL" };
   }
 
   try {

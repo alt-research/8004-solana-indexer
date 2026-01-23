@@ -291,6 +291,7 @@ async function handleMetadataSet(
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (id) DO UPDATE SET
          value = EXCLUDED.value,
+         immutable = metadata.immutable OR EXCLUDED.immutable,
          block_slot = EXCLUDED.block_slot,
          tx_index = EXCLUDED.tx_index,
          updated_at = EXCLUDED.updated_at`,
@@ -559,7 +560,10 @@ async function handleValidationRequested(
     await db.query(
       `INSERT INTO validations (id, asset, validator_address, nonce, requester, request_uri, request_hash, status, block_slot, tx_index, tx_signature, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-       ON CONFLICT (id) DO NOTHING`,
+       ON CONFLICT (id) DO UPDATE SET
+         requester = EXCLUDED.requester,
+         request_uri = EXCLUDED.request_uri,
+         request_hash = EXCLUDED.request_hash`,
       [id, assetId, validatorAddress, data.nonce, data.requester.toBase58(),
        data.requestUri || null, data.requestHash ? Buffer.from(data.requestHash).toString("hex") : null,
        "PENDING", ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString()]

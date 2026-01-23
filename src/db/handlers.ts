@@ -292,6 +292,15 @@ async function handleMetadataSet(
 
   const assetId = data.asset.toBase58();
 
+  // Add PREFIX_RAW (0x00) for SDK decode compatibility
+  const prefixedValue = Buffer.concat([Buffer.from([0x00]), Buffer.from(data.value)]);
+
+  // Fetch existing to check immutable state
+  const existing = await prisma.agentMetadata.findUnique({
+    where: { agentId_key: { agentId: assetId, key: data.key } },
+    select: { immutable: true },
+  });
+
   await prisma.agentMetadata.upsert({
     where: {
       agentId_key: {
@@ -302,14 +311,14 @@ async function handleMetadataSet(
     create: {
       agentId: assetId,
       key: data.key,
-      value: Buffer.from(data.value),
+      value: prefixedValue,
       immutable: data.immutable,
       txSignature: ctx.signature,
       slot: ctx.slot,
     },
     update: {
-      value: Buffer.from(data.value),
-      // Immutable flag stays true once set
+      value: prefixedValue,
+      immutable: existing?.immutable || data.immutable, // Once true, stays true
       txSignature: ctx.signature,
       slot: ctx.slot,
     },
@@ -592,7 +601,14 @@ async function handleValidationRequested(
       requestTxSignature: ctx.signature,
       requestSlot: ctx.slot,
     },
-    update: {},
+    update: {
+      // Backfill request fields if response was indexed first
+      requester: data.requester.toBase58(),
+      requestUri: data.requestUri,
+      requestHash: normalizeHash(data.requestHash),
+      requestTxSignature: ctx.signature,
+      requestSlot: ctx.slot,
+    },
   });
 
   logger.info(

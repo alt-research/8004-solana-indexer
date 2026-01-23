@@ -271,6 +271,9 @@ async function handleMetadataSet(
   const id = `${assetId}:${keyHash}`;
 
   try {
+    // Compress value for storage (threshold: 256 bytes)
+    const compressedValue = await compressForStorage(Buffer.from(data.value));
+
     await db.query(
       `INSERT INTO metadata (id, asset, key, key_hash, value, immutable, block_slot, tx_index, tx_signature, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -279,7 +282,7 @@ async function handleMetadataSet(
          block_slot = EXCLUDED.block_slot,
          tx_index = EXCLUDED.tx_index,
          updated_at = EXCLUDED.updated_at`,
-      [id, assetId, data.key, keyHash, Buffer.from(data.value), data.immutable, Number(ctx.slot), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString()]
+      [id, assetId, data.key, keyHash, compressedValue, data.immutable, Number(ctx.slot), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString()]
     );
     logger.info({ assetId, key: data.key }, "Metadata set");
   } catch (error: any) {
@@ -651,6 +654,7 @@ export async function saveIndexerState(signature: string, slot: bigint): Promise
 // =============================================
 
 import { digestUri, serializeValue } from "../indexer/uriDigest.js";
+import { compressForStorage } from "../utils/compression.js";
 
 /**
  * Fetch, digest, and store URI metadata for an agent
@@ -712,13 +716,16 @@ async function storeUriMetadata(assetId: string, key: string, value: string): Pr
   const id = `${assetId}:${keyHash}`;
 
   try {
+    // Compress value for storage (threshold: 256 bytes)
+    const compressedValue = await compressForStorage(Buffer.from(value));
+
     await db.query(
       `INSERT INTO metadata (id, asset, key, key_hash, value, immutable, block_slot, updated_at)
        VALUES ($1, $2, $3, $4, $5, false, 0, NOW())
        ON CONFLICT (id) DO UPDATE SET
          value = EXCLUDED.value,
          updated_at = NOW()`,
-      [id, assetId, key, keyHash, Buffer.from(value)]
+      [id, assetId, key, keyHash, compressedValue]
     );
   } catch (error: any) {
     logger.error({ error: error.message, assetId, key }, "Failed to store URI metadata");

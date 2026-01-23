@@ -380,6 +380,9 @@ export function createApiServer(options: ApiServerOptions): Express {
   app.get('/rest/v1/stats', globalStatsHandler);
   app.get('/rest/v1/global_stats', globalStatsHandler);
 
+  // GET /rest/v1/metadata - Not supported in local mode (no Prisma model)
+  // Metadata is only available in Supabase mode via PostgREST
+
   // GET /rest/v1/leaderboard - Top agents (PostgREST format)
   app.get('/rest/v1/leaderboard', async (req: Request, res: Response) => {
     try {

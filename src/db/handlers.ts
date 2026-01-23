@@ -284,7 +284,7 @@ async function handleMetadataSet(
   data: MetadataSet,
   ctx: EventContext
 ): Promise<void> {
-  // Skip reserved _uri: prefix to avoid collision with URI-derived metadata
+  // Skip _uri: prefix (reserved for indexer-derived metadata)
   if (data.key.startsWith("_uri:")) {
     logger.warn({ assetId: data.asset.toBase58(), key: data.key }, "Skipping reserved _uri: prefix");
     return;
@@ -458,6 +458,7 @@ async function handleResponseAppended(
 ): Promise<void> {
   const assetId = data.asset.toBase58();
   const clientAddress = data.client.toBase58();
+  const responder = data.responder.toBase58();
 
   const feedback = await prisma.feedback.findUnique({
     where: {
@@ -470,9 +471,39 @@ async function handleResponseAppended(
   });
 
   if (!feedback) {
+    // Store as orphan response (parity with Supabase)
+    // Feedback may not be indexed yet or indexer started after feedback was created
     logger.warn(
       { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
-      "Feedback not found for response"
+      "Feedback not found, storing as orphan response"
+    );
+
+    await prisma.orphanResponse.upsert({
+      where: {
+        agentId_client_feedbackIndex_responder_txSignature: {
+          agentId: assetId,
+          client: clientAddress,
+          feedbackIndex: data.feedbackIndex,
+          responder,
+          txSignature: ctx.signature,
+        },
+      },
+      create: {
+        agentId: assetId,
+        client: clientAddress,
+        feedbackIndex: data.feedbackIndex,
+        responder,
+        responseUri: data.responseUri,
+        responseHash: normalizeHash(data.responseHash),
+        txSignature: ctx.signature,
+        slot: ctx.slot,
+      },
+      update: {},
+    });
+
+    logger.info(
+      { assetId, feedbackIndex: data.feedbackIndex.toString() },
+      "Orphan response stored"
     );
     return;
   }
@@ -483,13 +514,13 @@ async function handleResponseAppended(
     where: {
       feedbackId_responder_txSignature: {
         feedbackId: feedback.id,
-        responder: data.responder.toBase58(),
+        responder,
         txSignature: ctx.signature,
       },
     },
     create: {
       feedbackId: feedback.id,
-      responder: data.responder.toBase58(),
+      responder,
       responseUri: data.responseUri,
       responseHash: normalizeHash(data.responseHash),
       txSignature: ctx.signature,

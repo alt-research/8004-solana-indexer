@@ -6,8 +6,13 @@ dist/
 
 # Environment variables
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+
+# Internal docs
+docs/SECURITY_AUDIT.md
+docs/*AUDIT*.md
+docs/*PLAN*.md
 
 # IDE
 .vscode/

@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { PrismaClient } from "@prisma/client";
 import { PublicKey } from "@solana/web3.js";
 import { handleEvent, EventContext } from "../../src/db/handlers.js";
 import { createApiServer } from "../../src/api/server.js";
 import type { ProgramEvent } from "../../src/parser/types.js";
 import type { Express } from "express";
 import type { Server } from "http";
+import { prisma } from "./setup.js";
 
 // Test fixtures - valid base58 pubkeys (44 chars, no 0/I/O/l)
 const TEST_AGENT_ID = new PublicKey(
@@ -28,36 +28,17 @@ const TEST_VALIDATOR = new PublicKey(
 );
 
 describe("E2E: Full Indexer Flow", () => {
-  let prisma: PrismaClient;
   let app: Express;
   let server: Server;
   const PORT = 4100;
 
   beforeAll(async () => {
-    prisma = new PrismaClient();
-
-    // Clean database
-    try {
-      await prisma.eventLog.deleteMany();
-      await prisma.feedbackResponse.deleteMany();
-      await prisma.orphanResponse.deleteMany();
-      await prisma.validation.deleteMany();
-      await prisma.feedback.deleteMany();
-      await prisma.agentMetadata.deleteMany();
-      await prisma.agent.deleteMany();
-      await prisma.registry.deleteMany();
-      await prisma.indexerState.deleteMany();
-    } catch {
-      // Tables may not exist
-    }
-
     app = createApiServer({ prisma });
     server = app.listen(PORT);
   });
 
   afterAll(async () => {
     server?.close();
-    await prisma.$disconnect();
   });
 
   const ctx: EventContext = {

@@ -1,17 +1,20 @@
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { execSync } from 'child_process';
+import { unlinkSync, existsSync } from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const testDbPath = join(__dirname, '../../prisma/test.db');
 
 // Set environment BEFORE any other imports
-process.env.DATABASE_URL = process.env.DATABASE_URL || `file:${testDbPath}`;
+process.env.DATABASE_URL = `file:${testDbPath}`;
 process.env.RPC_URL = process.env.RPC_URL || "https://api.devnet.solana.com";
 process.env.WS_URL = process.env.WS_URL || "wss://api.devnet.solana.com";
 process.env.PROGRAM_ID = process.env.PROGRAM_ID || "3GGkAWC3mYYdud8GVBsKXK5QC9siXtFkWVZFYtbueVbC";
 process.env.LOG_LEVEL = "silent";
 process.env.INDEXER_MODE = "polling";
+process.env.DB_MODE = "local";
 
 // Now import dependencies
 import { vi, beforeAll, afterAll, beforeEach } from "vitest";
@@ -34,26 +37,28 @@ vi.mock("pino", () => {
 let prisma: PrismaClient;
 
 beforeAll(async () => {
-  prisma = new PrismaClient();
-
-  // Clean database before tests (SQLite uses DELETE, not TRUNCATE)
-  try {
-    await prisma.eventLog.deleteMany();
-    await prisma.feedbackResponse.deleteMany();
-    await prisma.orphanResponse.deleteMany();
-    await prisma.validation.deleteMany();
-    await prisma.feedback.deleteMany();
-    await prisma.agentMetadata.deleteMany();
-    await prisma.agent.deleteMany();
-    await prisma.registry.deleteMany();
-    await prisma.indexerState.deleteMany();
-  } catch {
-    // Tables may not exist yet, that's fine
+  // Remove old test database if exists
+  if (existsSync(testDbPath)) {
+    unlinkSync(testDbPath);
   }
+
+  // Push schema to create fresh test database
+  execSync('npx prisma db push --skip-generate', {
+    cwd: join(__dirname, '../..'),
+    env: { ...process.env, DATABASE_URL: `file:${testDbPath}` },
+    stdio: 'pipe',
+  });
+
+  prisma = new PrismaClient();
+  await prisma.$connect();
 });
 
 afterAll(async () => {
   await prisma.$disconnect();
+  // Clean up test database
+  if (existsSync(testDbPath)) {
+    unlinkSync(testDbPath);
+  }
 });
 
 beforeEach(() => {

@@ -305,7 +305,13 @@ export function createApiServer(options: ApiServerOptions): Express {
         skip: offset,
       });
 
-      res.json(registries);
+      // Convert BigInt fields to strings for JSON serialization
+      const mapped = registries.map(r => ({
+        ...r,
+        slot: r.slot !== null ? r.slot.toString() : null,
+      }));
+
+      res.json(mapped);
     } catch (error) {
       logger.error({ error }, 'Error fetching registries');
       res.status(500).json({ error: 'Internal server error' });

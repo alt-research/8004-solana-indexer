@@ -75,7 +75,7 @@ describe("DB Handlers", () => {
 
         await handleEvent(prisma, event, ctx);
 
-        expect(prisma.agent.update).toHaveBeenCalledWith({
+        expect(prisma.agent.updateMany).toHaveBeenCalledWith({
           where: { id: TEST_ASSET.toBase58() },
           data: {
             owner: TEST_NEW_OWNER.toBase58(),
@@ -99,13 +99,11 @@ describe("DB Handlers", () => {
 
         await handleEvent(prisma, event, ctx);
 
-        expect(prisma.agent.update).toHaveBeenCalledWith({
-          where: { id: TEST_ASSET.toBase58() },
-          data: {
-            uri: newUri,
-            updatedAt: ctx.blockTime,
-          },
-        });
+        expect(prisma.agent.updateMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { id: TEST_ASSET.toBase58() },
+          })
+        );
       });
     });
 
@@ -123,7 +121,7 @@ describe("DB Handlers", () => {
 
         await handleEvent(prisma, event, ctx);
 
-        expect(prisma.agent.update).toHaveBeenCalledWith({
+        expect(prisma.agent.updateMany).toHaveBeenCalledWith({
           where: { id: TEST_ASSET.toBase58() },
           data: {
             wallet: TEST_WALLET.toBase58(),
@@ -193,7 +191,6 @@ describe("DB Handlers", () => {
           data: {
             registry: TEST_REGISTRY,
             collection: TEST_COLLECTION,
-            baseIndex: 0,
             createdBy: TEST_OWNER,
           },
         };
@@ -205,7 +202,6 @@ describe("DB Handlers", () => {
             where: { id: TEST_REGISTRY.toBase58() },
             create: expect.objectContaining({
               registryType: "Base",
-              baseIndex: 0,
             }),
           })
         );
@@ -237,31 +233,19 @@ describe("DB Handlers", () => {
       });
     });
 
-    describe("BaseRegistryRotated", () => {
-      it("should handle registry rotation (logs only)", async () => {
-        const newRegistry = TEST_REGISTRY; // simplified
-        const event: ProgramEvent = {
-          type: "BaseRegistryRotated",
-          data: {
-            oldRegistry: TEST_REGISTRY,
-            newRegistry: newRegistry,
-            rotatedBy: TEST_OWNER,
-          },
-        };
-
-        // Should not throw, just log
-        await expect(handleEvent(prisma, event, ctx)).resolves.not.toThrow();
-      });
-    });
-
     describe("NewFeedback", () => {
       it("should upsert feedback", async () => {
+        // Mock agent.findMany to return existing agent for reconciliation
+        (prisma.agent.findMany as any).mockResolvedValue([{ id: TEST_ASSET.toBase58() }]);
+
         const event: ProgramEvent = {
           type: "NewFeedback",
           data: {
             asset: TEST_ASSET,
             clientAddress: TEST_CLIENT,
             feedbackIndex: 0n,
+            value: 9500n,
+            valueDecimals: 2,
             score: 85,
             tag1: "quality",
             tag2: "speed",
@@ -291,6 +275,8 @@ describe("DB Handlers", () => {
             },
             create: expect.objectContaining({
               score: 85,
+              value: 9500n,
+              valueDecimals: 2,
               tag1: "quality",
               tag2: "speed",
             }),

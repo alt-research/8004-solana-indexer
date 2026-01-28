@@ -10,6 +10,7 @@ export function createMockPrismaClient(): PrismaClient {
       findMany: vi.fn().mockResolvedValue([]),
       create: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       upsert: vi.fn(),
       delete: vi.fn(),
       count: vi.fn().mockResolvedValue(0),
@@ -61,6 +62,13 @@ export function createMockPrismaClient(): PrismaClient {
     eventLog: {
       create: vi.fn(),
       findMany: vi.fn().mockResolvedValue([]),
+    },
+    orphanResponse: {
+      findMany: vi.fn().mockResolvedValue([]),
+      create: vi.fn(),
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
   } as unknown as PrismaClient;
 }

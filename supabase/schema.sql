@@ -26,7 +26,6 @@ CREATE TABLE collections (
   collection TEXT PRIMARY KEY,
   registry_type TEXT CHECK (registry_type IN ('BASE', 'USER')),
   authority TEXT,
-  base_index INTEGER,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 

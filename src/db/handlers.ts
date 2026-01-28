@@ -375,7 +375,6 @@ async function handleBaseRegistryCreated(
       collection: data.collection.toBase58(),
       registryType: "Base",
       authority: data.createdBy.toBase58(),
-      baseIndex: data.baseIndex,
       txSignature: ctx.signature,
       slot: ctx.slot,
     },
@@ -383,7 +382,7 @@ async function handleBaseRegistryCreated(
   });
 
   logger.info(
-    { registryId: data.registry.toBase58(), baseIndex: data.baseIndex },
+    { registryId: data.registry.toBase58() },
     "Base registry created"
   );
 }

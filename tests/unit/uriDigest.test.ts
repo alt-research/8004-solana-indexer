@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { digestUri, serializeValue } from "../../src/indexer/uriDigest.js";
+import { digestUri, serializeValue, sanitizeText, sanitizeUrl } from "../../src/indexer/uriDigest.js";
 
 // Mock the config module
 vi.mock("../../src/config.js", () => ({
@@ -48,23 +48,33 @@ describe("URI Digest Module", () => {
     });
 
     it("should extract standard ERC-8004 fields from valid JSON", async () => {
+      // ERC-8004 spec: https://github.com/erc-8004/best-practices/blob/main/Registration.md
       const mockJson = {
-        type: "ai-agent",
+        type: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
         name: "Test Agent",
         description: "A test agent",
         image: "https://example.com/image.png",
-        skills: ["web-search", "code-generation"],
-        domains: ["finance", "tech"],
         active: true,
-        endpoints: [
-          { type: "mcp", url: "https://api.example.com/mcp" }
+        x402Support: false,
+        supportedTrust: ["reputation"],
+        services: [
+          {
+            name: "mcp",
+            endpoint: "https://api.example.com/mcp",
+            version: "1.0",
+            skills: ["web-search", "code-generation"],
+            domains: ["finance", "tech"],
+          }
+        ],
+        registrations: [
+          { agentId: 123, agentRegistry: "eip155:1:0x1234567890abcdef" }
         ],
       };
 
       // Mock fetch
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
-        headers: new Headers({ "content-length": "200" }),
+        headers: new Headers({ "content-length": "500" }),
         body: {
           getReader: () => ({
             read: vi.fn()
@@ -84,16 +94,25 @@ describe("URI Digest Module", () => {
       expect(result.bytes).toBeGreaterThan(0);
       expect(result.hash).toBeDefined();
       expect(result.fields).toBeDefined();
-      expect(result.fields!["_uri:type"]).toBe("ai-agent");
+      expect(result.fields!["_uri:type"]).toBe("https://eips.ethereum.org/EIPS/eip-8004#registration-v1");
       expect(result.fields!["_uri:name"]).toBe("Test Agent");
       expect(result.fields!["_uri:description"]).toBe("A test agent");
       expect(result.fields!["_uri:image"]).toBe("https://example.com/image.png");
-      expect(result.fields!["_uri:skills"]).toEqual(["web-search", "code-generation"]);
-      expect(result.fields!["_uri:domains"]).toEqual(["finance", "tech"]);
       expect(result.fields!["_uri:active"]).toBe(true);
-      expect(result.fields!["_uri:endpoints"]).toEqual([
-        { type: "mcp", url: "https://api.example.com/mcp" }
-      ]);
+      expect(result.fields!["_uri:x402_support"]).toBe(false);
+      expect(result.fields!["_uri:supported_trust"]).toEqual(["reputation"]);
+      // Services with skills/domains inside
+      const services = result.fields!["_uri:services"] as Array<Record<string, unknown>>;
+      expect(services).toHaveLength(1);
+      expect(services[0].name).toBe("mcp");
+      expect(services[0].endpoint).toBe("https://api.example.com/mcp");
+      expect(services[0].skills).toEqual(["web-search", "code-generation"]);
+      expect(services[0].domains).toEqual(["finance", "tech"]);
+      // Registrations
+      const registrations = result.fields!["_uri:registrations"] as Array<Record<string, unknown>>;
+      expect(registrations).toHaveLength(1);
+      expect(registrations[0].agentId).toBe(123);
+      expect(registrations[0].agentRegistry).toBe("eip155:1:0x1234567890abcdef");
     });
 
     it("should handle HTTP error responses", async () => {
@@ -245,7 +264,8 @@ describe("URI Digest Module", () => {
       // Custom fields stored with _uri: prefix
       expect(result.fields!["_uri:customField1"]).toBe("value1");
       expect(result.fields!["_uri:customField2"]).toBe("value2");
-      expect(result.fields!["_uri:nestedObject"]).toEqual({ foo: "bar" });
+      // Nested objects are serialized to JSON for XSS protection
+      expect(result.fields!["_uri:nestedObject"]).toBe('{"foo":"bar"}');
       // No _uri:raw blob
       expect(result.fields!["_uri:raw"]).toBeUndefined();
     });
@@ -296,6 +316,279 @@ describe("URI Digest Module", () => {
 
       // Should be limited to 50
       expect(extraKeyCount).toBe(50);
+    });
+  });
+
+  describe("XSS/Injection Protection", () => {
+    describe("sanitizeText", () => {
+      it("should strip HTML script tags", () => {
+        const result = sanitizeText('<script>alert("xss")</script>');
+        expect(result).toBe("");
+      });
+
+      it("should strip img onerror XSS", () => {
+        const result = sanitizeText('<img src=x onerror="alert(1)">');
+        expect(result).toBe("");
+      });
+
+      it("should strip SVG with script", () => {
+        const result = sanitizeText('<svg onload="alert(1)"></svg>');
+        expect(result).toBe("");
+      });
+
+      it("should preserve valid text content", () => {
+        const result = sanitizeText("Test Agent - AI Assistant v2.0");
+        expect(result).toBe("Test Agent - AI Assistant v2.0");
+      });
+
+      it("should preserve Unicode characters", () => {
+        const result = sanitizeText("エージェント 🤖 代理人");
+        expect(result).toBe("エージェント 🤖 代理人");
+      });
+
+      it("should handle nested XSS attempts", () => {
+        const result = sanitizeText('<div><script>evil()</script><p>Text</p></div>');
+        expect(result).toBe("Text");
+      });
+
+      it("should strip event handlers", () => {
+        const result = sanitizeText('<div onclick="evil()">Click me</div>');
+        expect(result).toBe("Click me");
+      });
+
+      it("should handle SQL injection strings (preserves as text)", () => {
+        const input = "'; DROP TABLE agents; --";
+        const result = sanitizeText(input);
+        expect(result).toBe("'; DROP TABLE agents; --");
+      });
+    });
+
+    describe("sanitizeUrl", () => {
+      it("should allow https URLs", () => {
+        const result = sanitizeUrl("https://example.com/image.png");
+        expect(result).toBe("https://example.com/image.png");
+      });
+
+      it("should allow http URLs", () => {
+        const result = sanitizeUrl("http://example.com/image.png");
+        expect(result).toBe("http://example.com/image.png");
+      });
+
+      it("should allow IPFS URIs", () => {
+        const result = sanitizeUrl("ipfs://QmTest123abc");
+        expect(result).toBe("ipfs://QmTest123abc");
+      });
+
+      it("should allow Arweave URIs", () => {
+        const result = sanitizeUrl("ar://arweave-tx-id-123");
+        expect(result).toBe("ar://arweave-tx-id-123");
+      });
+
+      it("should block javascript: protocol", () => {
+        const result = sanitizeUrl('javascript:alert("xss")');
+        expect(result).toBe("");
+      });
+
+      it("should block data: protocol", () => {
+        const result = sanitizeUrl("data:text/html,<script>alert(1)</script>");
+        expect(result).toBe("");
+      });
+
+      it("should block vbscript: protocol", () => {
+        const result = sanitizeUrl("vbscript:msgbox(1)");
+        expect(result).toBe("");
+      });
+
+      it("should block file: protocol", () => {
+        const result = sanitizeUrl("file:///etc/passwd");
+        expect(result).toBe("");
+      });
+
+      it("should handle malformed URLs", () => {
+        const result = sanitizeUrl("not a valid url");
+        expect(result).toBe("");
+      });
+
+      it("should strip XSS from IPFS paths", () => {
+        const result = sanitizeUrl('ipfs://<script>alert(1)</script>');
+        expect(result).toBe("");
+      });
+    });
+
+    describe("XSS in metadata extraction", () => {
+      beforeEach(() => {
+        vi.clearAllMocks();
+      });
+
+      it("should sanitize XSS in name field", async () => {
+        const mockJson = {
+          name: '<script>alert("xss")</script>Test Agent',
+          description: "Normal description",
+        };
+
+        global.fetch = vi.fn().mockResolvedValue({
+          ok: true,
+          headers: new Headers({ "content-length": "100" }),
+          body: {
+            getReader: () => ({
+              read: vi.fn()
+                .mockResolvedValueOnce({
+                  done: false,
+                  value: new TextEncoder().encode(JSON.stringify(mockJson)),
+                })
+                .mockResolvedValueOnce({ done: true, value: undefined }),
+              cancel: vi.fn(),
+            }),
+          },
+        } as unknown as Response);
+
+        const result = await digestUri("https://example.com/agent.json");
+
+        expect(result.status).toBe("ok");
+        // Script tag stripped, only plain text remains
+        expect(result.fields!["_uri:name"]).toBe("Test Agent");
+      });
+
+      it("should sanitize XSS in description field", async () => {
+        const mockJson = {
+          name: "Test Agent",
+          description: '<img src=x onerror="stealCookies()">A helpful assistant',
+        };
+
+        global.fetch = vi.fn().mockResolvedValue({
+          ok: true,
+          headers: new Headers({ "content-length": "100" }),
+          body: {
+            getReader: () => ({
+              read: vi.fn()
+                .mockResolvedValueOnce({
+                  done: false,
+                  value: new TextEncoder().encode(JSON.stringify(mockJson)),
+                })
+                .mockResolvedValueOnce({ done: true, value: undefined }),
+              cancel: vi.fn(),
+            }),
+          },
+        } as unknown as Response);
+
+        const result = await digestUri("https://example.com/agent.json");
+
+        expect(result.status).toBe("ok");
+        expect(result.fields!["_uri:description"]).toBe("A helpful assistant");
+      });
+
+      it("should block dangerous image URLs", async () => {
+        const mockJson = {
+          name: "Test Agent",
+          image: 'javascript:alert("xss")',
+        };
+
+        global.fetch = vi.fn().mockResolvedValue({
+          ok: true,
+          headers: new Headers({ "content-length": "100" }),
+          body: {
+            getReader: () => ({
+              read: vi.fn()
+                .mockResolvedValueOnce({
+                  done: false,
+                  value: new TextEncoder().encode(JSON.stringify(mockJson)),
+                })
+                .mockResolvedValueOnce({ done: true, value: undefined }),
+              cancel: vi.fn(),
+            }),
+          },
+        } as unknown as Response);
+
+        const result = await digestUri("https://example.com/agent.json");
+
+        expect(result.status).toBe("ok");
+        // Dangerous URL is blocked (field will be missing or empty)
+        expect(result.fields!["_uri:image"]).toBeUndefined();
+      });
+
+      it("should sanitize service endpoints (ERC-8004 format)", async () => {
+        const mockJson = {
+          name: "Test Agent",
+          services: [
+            { name: "mcp", endpoint: "https://api.example.com/mcp" },
+            { name: "a2a", endpoint: 'javascript:alert("xss")' }, // Blocked - invalid endpoint
+            { name: "mcp", endpoint: "http://localhost:3000/mcp" }, // Allowed (HTTP ok)
+            { name: "invalid-type", endpoint: "https://valid.url" }, // Blocked - invalid service name
+          ],
+        };
+
+        global.fetch = vi.fn().mockResolvedValue({
+          ok: true,
+          headers: new Headers({ "content-length": "300" }),
+          body: {
+            getReader: () => ({
+              read: vi.fn()
+                .mockResolvedValueOnce({
+                  done: false,
+                  value: new TextEncoder().encode(JSON.stringify(mockJson)),
+                })
+                .mockResolvedValueOnce({ done: true, value: undefined }),
+              cancel: vi.fn(),
+            }),
+          },
+        } as unknown as Response);
+
+        const result = await digestUri("https://example.com/agent.json");
+
+        expect(result.status).toBe("ok");
+        const services = result.fields!["_uri:services"] as Array<Record<string, unknown>>;
+        // Only valid services should remain
+        expect(services.length).toBe(2);
+        expect(services[0]).toEqual({ name: "mcp", endpoint: "https://api.example.com/mcp" });
+        expect(services[1]).toEqual({ name: "mcp", endpoint: "http://localhost:3000/mcp" });
+      });
+
+      it("should validate skill slugs inside services (reject XSS)", async () => {
+        const mockJson = {
+          name: "Test Agent",
+          services: [
+            {
+              name: "oasf",
+              endpoint: "https://example.com/oasf",
+              skills: [
+                "web-search", // Valid
+                '<script>alert(1)</script>', // Invalid
+                "code-generation", // Valid
+                "INVALID SLUG!", // Invalid (spaces, special chars)
+              ],
+              domains: [
+                "finance", // Valid
+                "<img onerror=alert(1)>", // Invalid
+              ],
+            },
+          ],
+        };
+
+        global.fetch = vi.fn().mockResolvedValue({
+          ok: true,
+          headers: new Headers({ "content-length": "300" }),
+          body: {
+            getReader: () => ({
+              read: vi.fn()
+                .mockResolvedValueOnce({
+                  done: false,
+                  value: new TextEncoder().encode(JSON.stringify(mockJson)),
+                })
+                .mockResolvedValueOnce({ done: true, value: undefined }),
+              cancel: vi.fn(),
+            }),
+          },
+        } as unknown as Response);
+
+        const result = await digestUri("https://example.com/agent.json");
+
+        expect(result.status).toBe("ok");
+        const services = result.fields!["_uri:services"] as Array<Record<string, unknown>>;
+        expect(services.length).toBe(1);
+        // Only valid slugs remain
+        expect(services[0].skills).toEqual(["web-search", "code-generation"]);
+        expect(services[0].domains).toEqual(["finance"]);
+      });
     });
   });
 

@@ -128,7 +128,7 @@ query {
 
 | Category | Events |
 |----------|--------|
-| **Identity** | AgentRegisteredInRegistry, AgentOwnerSynced, UriUpdated, WalletUpdated, MetadataSet, MetadataDeleted, BaseRegistryCreated, UserRegistryCreated, BaseRegistryRotated |
+| **Identity** | AgentRegisteredInRegistry, AgentOwnerSynced, UriUpdated, WalletUpdated, MetadataSet, MetadataDeleted, BaseRegistryCreated, UserRegistryCreated |
 | **Reputation** | NewFeedback, FeedbackRevoked, ResponseAppended |
 | **Validation** | ValidationRequested, ValidationResponded |
 

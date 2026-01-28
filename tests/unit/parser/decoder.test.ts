@@ -36,7 +36,7 @@ describe("Parser Decoder", () => {
     it("should have events defined in IDL", () => {
       expect(idl.events).toBeDefined();
       expect(Array.isArray(idl.events)).toBe(true);
-      expect(idl.events!.length).toBe(15);
+      expect(idl.events!.length).toBe(14);
     });
   });
 
@@ -352,7 +352,6 @@ describe("Parser Decoder", () => {
         data: {
           registry: TEST_REGISTRY.toBase58(),
           collection: TEST_COLLECTION.toBase58(),
-          base_index: 0,
           created_by: TEST_OWNER.toBase58(),
         },
       };
@@ -361,7 +360,6 @@ describe("Parser Decoder", () => {
 
       expect(result).not.toBeNull();
       expect(result!.type).toBe("BaseRegistryCreated");
-      expect(result!.data.baseIndex).toBe(0);
     });
 
     it("should convert UserRegistryCreated event", () => {
@@ -380,25 +378,6 @@ describe("Parser Decoder", () => {
       expect(result!.type).toBe("UserRegistryCreated");
     });
 
-    it("should convert BaseRegistryRotated event", () => {
-      // Create a valid new registry key using 32-byte array
-      const newRegistryBytes = new Uint8Array(32).fill(10);
-      const newRegistry = new PublicKey(newRegistryBytes);
-      const event = {
-        name: "BaseRegistryRotated",
-        data: {
-          old_registry: TEST_REGISTRY.toBase58(),
-          new_registry: newRegistry.toBase58(),
-          rotated_by: TEST_OWNER.toBase58(),
-        },
-      };
-
-      const result = toTypedEvent(event);
-
-      expect(result).not.toBeNull();
-      expect(result!.type).toBe("BaseRegistryRotated");
-    });
-
     it("should convert NewFeedback event", () => {
       const event = {
         name: "NewFeedback",
@@ -406,6 +385,8 @@ describe("Parser Decoder", () => {
           asset: TEST_ASSET.toBase58(),
           client_address: TEST_CLIENT.toBase58(),
           feedback_index: "0",
+          value: "9500",
+          value_decimals: 2,
           score: 85,
           feedback_hash: Array.from(TEST_HASH),
           atom_enabled: true,
@@ -427,6 +408,8 @@ describe("Parser Decoder", () => {
       expect(result).not.toBeNull();
       expect(result!.type).toBe("NewFeedback");
       expect(result!.data.feedbackIndex).toBe(0n);
+      expect(result!.data.value).toBe(9500n);
+      expect(result!.data.valueDecimals).toBe(2);
       expect(result!.data.score).toBe(85);
       expect(result!.data.tag1).toBe("quality");
     });
@@ -491,7 +474,7 @@ describe("Parser Decoder", () => {
 
       expect(result).not.toBeNull();
       expect(result!.type).toBe("ValidationRequested");
-      expect(result!.data.nonce).toBe(1);
+      expect(result!.data.nonce).toBe(1n);
     });
 
     it("should convert ValidationResponded event", () => {

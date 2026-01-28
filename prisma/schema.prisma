@@ -166,7 +166,6 @@ model Registry {
   collection   String   @unique // collection pubkey
   registryType String   // "Base" | "User"
   authority    String   // authority pubkey
-  baseIndex    Int?     // only for Base type
   createdAt    DateTime @default(now())
 
   // Transaction reference

@@ -60,7 +60,6 @@ describe("E2E: Full Indexer Flow", () => {
         data: {
           registry: TEST_REGISTRY,
           collection: TEST_COLLECTION,
-          baseIndex: 0,
           createdBy: TEST_OWNER,
         },
       };

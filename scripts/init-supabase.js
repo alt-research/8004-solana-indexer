@@ -114,7 +114,6 @@ CREATE TABLE "Registry" (
     "collection" TEXT NOT NULL,
     "registryType" TEXT NOT NULL,
     "authority" TEXT NOT NULL,
-    "baseIndex" INTEGER,
     "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "txSignature" TEXT,
     "slot" BIGINT

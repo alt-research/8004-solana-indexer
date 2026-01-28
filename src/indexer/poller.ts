@@ -28,6 +28,14 @@ export class Poller {
   private batchSize: number;
   private isRunning = false;
   private lastSignature: string | null = null;
+  private processedCount = 0;
+  private errorCount = 0;
+  private lastStatsLog = Date.now();
+  // Track pagination continuation when hitting memory limits
+  // pendingContinuation: where to resume pagination FROM
+  // pendingStopSignature: where to STOP (original lastSignature when we hit the limit)
+  private pendingContinuation: string | null = null;
+  private pendingStopSignature: string | null = null;
 
   constructor(options: PollerOptions) {
     this.connection = options.connection;
@@ -35,6 +43,18 @@ export class Poller {
     this.programId = options.programId;
     this.pollingInterval = options.pollingInterval || config.pollingInterval;
     this.batchSize = options.batchSize || config.batchSize;
+  }
+
+  private logStatsIfNeeded(): void {
+    const now = Date.now();
+    if (now - this.lastStatsLog > 60000) {
+      logger.info({
+        processedCount: this.processedCount,
+        errorCount: this.errorCount,
+        lastSignature: this.lastSignature?.slice(0, 16) + '...',
+      }, "Poller stats (60s)");
+      this.lastStatsLog = now;
+    }
   }
 
   async start(): Promise<void> {
@@ -70,33 +90,46 @@ export class Poller {
     const checkpoints: string[] = [];
     let beforeSignature: string | undefined = undefined;
     let totalEstimate = 0;
+    let scanErrors = 0;
 
     // Phase 1: Collect checkpoint signatures (one per ~1000 txs) to avoid loading all in memory
     logger.info("Phase 1: Scanning for oldest transactions...");
     while (this.isRunning) {
-      const signatures = await this.connection.getSignaturesForAddress(
-        this.programId,
-        { limit: this.batchSize, before: beforeSignature }
-      );
+      try {
+        const signatures = await this.connection.getSignaturesForAddress(
+          this.programId,
+          { limit: this.batchSize, before: beforeSignature }
+        );
 
-      if (signatures.length === 0) break;
+        if (signatures.length === 0) break;
 
-      const validSigs = signatures.filter((sig) => sig.err === null);
-      totalEstimate += validSigs.length;
+        const validSigs = signatures.filter((sig) => sig.err === null);
+        totalEstimate += validSigs.length;
 
-      // Save checkpoint every batch
-      if (validSigs.length > 0) {
-        checkpoints.push(validSigs[validSigs.length - 1].signature);
-      }
+        // Save checkpoint every batch
+        if (validSigs.length > 0) {
+          checkpoints.push(validSigs[validSigs.length - 1].signature);
+        }
 
-      beforeSignature = signatures[signatures.length - 1].signature;
+        beforeSignature = signatures[signatures.length - 1].signature;
 
-      if (signatures.length < this.batchSize) break;
+        if (signatures.length < this.batchSize) break;
 
-      await new Promise((resolve) => setTimeout(resolve, 100));
+        await new Promise((resolve) => setTimeout(resolve, 100));
 
-      if (totalEstimate % 5000 === 0) {
-        logger.info({ scanned: totalEstimate }, "Scanning progress...");
+        if (totalEstimate % 5000 === 0) {
+          logger.info({ scanned: totalEstimate, checkpoints: checkpoints.length }, "Scanning progress...");
+        }
+      } catch (error) {
+        scanErrors++;
+        logger.error({ error, scanErrors, beforeSignature }, "Error during backfill scan");
+
+        // Retry with exponential backoff
+        if (scanErrors >= 5) {
+          logger.error("Too many scan errors, aborting backfill");
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000 * scanErrors));
       }
     }
 
@@ -142,29 +175,42 @@ export class Poller {
   ): Promise<ConfirmedSignatureInfo[]> {
     const windowSigs: ConfirmedSignatureInfo[] = [];
     let beforeSig: string | undefined = untilSig;
+    let retryCount = 0;
 
     while (this.isRunning) {
-      const options: { limit: number; before?: string; until?: string } = {
-        limit: this.batchSize,
-      };
-      if (beforeSig) options.before = beforeSig;
-      if (afterSig) options.until = afterSig;
+      try {
+        const options: { limit: number; before?: string; until?: string } = {
+          limit: this.batchSize,
+        };
+        if (beforeSig) options.before = beforeSig;
+        if (afterSig) options.until = afterSig;
 
-      const batch = await this.connection.getSignaturesForAddress(
-        this.programId,
-        options
-      );
+        const batch = await this.connection.getSignaturesForAddress(
+          this.programId,
+          options
+        );
 
-      if (batch.length === 0) break;
+        if (batch.length === 0) break;
 
-      const validBatch = batch.filter((sig) => sig.err === null);
-      windowSigs.push(...validBatch);
+        const validBatch = batch.filter((sig) => sig.err === null);
+        windowSigs.push(...validBatch);
 
-      beforeSig = batch[batch.length - 1].signature;
+        beforeSig = batch[batch.length - 1].signature;
 
-      if (batch.length < this.batchSize) break;
+        if (batch.length < this.batchSize) break;
 
-      await new Promise((resolve) => setTimeout(resolve, 50));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        retryCount = 0; // Reset on success
+      } catch (error) {
+        retryCount++;
+        logger.warn({ error, retryCount, windowSize: windowSigs.length }, "Error fetching signature window");
+
+        if (retryCount >= 3) {
+          logger.error("Too many errors fetching signature window, returning partial results");
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500 * retryCount));
+      }
     }
 
     // Reverse to get chronological order (oldest first)
@@ -180,6 +226,8 @@ export class Poller {
     previousCount: number,
     totalEstimate: number
   ): Promise<number> {
+    const startTime = Date.now();
+
     // Group by slot for tx_index resolution
     const bySlot = new Map<number, ConfirmedSignatureInfo[]>();
     for (const sig of signatures) {
@@ -211,12 +259,22 @@ export class Poller {
           this.lastSignature = sig.signature;
           await this.saveState(sig.signature, BigInt(sig.slot));
           processed++;
+          this.processedCount++;
 
           if ((previousCount + processed) % 100 === 0) {
-            logger.info({ processed: previousCount + processed, total: totalEstimate }, "Backfill progress");
+            logger.info({
+              processed: previousCount + processed,
+              total: totalEstimate,
+              rate: `${Math.round(100 / ((Date.now() - startTime) / 1000))} tx/s`
+            }, "Backfill progress");
           }
         } catch (error) {
-          logger.error({ error, signature: sig.signature }, "Error processing backfill transaction");
+          this.errorCount++;
+          logger.error({
+            error: error instanceof Error ? error.message : String(error),
+            signature: sig.signature,
+            slot: sig.slot
+          }, "Error processing backfill transaction");
         }
       }
     }
@@ -265,8 +323,19 @@ export class Poller {
   }
 
   async stop(): Promise<void> {
-    logger.info("Stopping poller");
+    logger.info({
+      processedCount: this.processedCount,
+      errorCount: this.errorCount,
+      lastSignature: this.lastSignature?.slice(0, 16) + '...'
+    }, "Stopping poller");
     this.isRunning = false;
+  }
+
+  getStats(): { processedCount: number; errorCount: number } {
+    return {
+      processedCount: this.processedCount,
+      errorCount: this.errorCount,
+    };
   }
 
   private async loadState(): Promise<void> {
@@ -371,15 +440,26 @@ export class Poller {
           await this.processTransaction(sig, txIndex);
           this.lastSignature = sig.signature;
           await this.saveState(sig.signature, BigInt(sig.slot));
+          this.processedCount++;
         } catch (error) {
+          this.errorCount++;
           logger.error(
-            { error, signature: sig.signature },
+            { error: error instanceof Error ? error.message : String(error), signature: sig.signature },
             "Error processing transaction"
           );
-          await this.logFailedTransaction(sig, error);
+          try {
+            await this.logFailedTransaction(sig, error);
+          } catch (logError) {
+            logger.warn(
+              { error: logError instanceof Error ? logError.message : String(logError), signature: sig.signature },
+              "Failed to log failed transaction"
+            );
+          }
         }
       }
     }
+
+    this.logStatsIfNeeded();
   }
 
   /**
@@ -388,65 +468,118 @@ export class Poller {
    * Returns signatures in newest-first order (caller should reverse for processing)
    */
   private async fetchSignatures(): Promise<ConfirmedSignatureInfo[]> {
-    if (!this.lastSignature) {
-      // No last signature - just get the latest batch
-      const signatures = await this.connection.getSignaturesForAddress(
-        this.programId,
-        { limit: this.batchSize }
-      );
-      return signatures.filter((sig) => sig.err === null);
-    }
-
-    // Paginate backwards from newest until we reach lastSignature
-    const allSignatures: ConfirmedSignatureInfo[] = [];
-    let beforeSignature: string | undefined = undefined;
-
-    while (true) {
-      const options: { limit: number; before?: string } = {
-        limit: this.batchSize,
-      };
-      if (beforeSignature) {
-        options.before = beforeSignature;
+    try {
+      if (!this.lastSignature) {
+        // No last signature - just get the latest batch
+        const signatures = await this.connection.getSignaturesForAddress(
+          this.programId,
+          { limit: this.batchSize }
+        );
+        logger.debug({ count: signatures.length }, "Fetched initial signatures");
+        return signatures.filter((sig) => sig.err === null);
       }
 
-      const batch = await this.connection.getSignaturesForAddress(
-        this.programId,
-        options
-      );
+      // Paginate backwards from newest until we reach lastSignature (or pendingStopSignature if resuming)
+      const allSignatures: ConfirmedSignatureInfo[] = [];
+      // Resume from continuation point if we hit memory limit in previous cycle
+      let beforeSignature: string | undefined = this.pendingContinuation || undefined;
+      // Use pendingStopSignature if resuming, otherwise use lastSignature
+      const stopSignature = this.pendingStopSignature || this.lastSignature;
+      let retryCount = 0;
 
-      if (batch.length === 0) {
-        break;
+      if (this.pendingContinuation) {
+        logger.info({
+          continuationPoint: beforeSignature,
+          stopSignature: stopSignature
+        }, "Resuming from previous continuation point");
+        // Clear continuation (will be set again if we hit limit)
+        // Keep pendingStopSignature until we finish the whole batch
+        this.pendingContinuation = null;
       }
 
-      // Filter out failed transactions and check for lastSignature
-      for (const sig of batch) {
-        if (sig.signature === this.lastSignature) {
-          // Reached our checkpoint, we're done
-          return allSignatures;
+      while (true) {
+        try {
+          const options: { limit: number; before?: string } = {
+            limit: this.batchSize,
+          };
+          if (beforeSignature) {
+            options.before = beforeSignature;
+          }
+
+          const batch = await this.connection.getSignaturesForAddress(
+            this.programId,
+            options
+          );
+
+          if (batch.length === 0) {
+            // Reached the end - clear pendingStopSignature since we're done
+            this.pendingStopSignature = null;
+            break;
+          }
+
+          // Filter out failed transactions and check for stop signature
+          for (const sig of batch) {
+            if (sig.signature === stopSignature) {
+              // Reached our checkpoint, we're done with the large batch
+              this.pendingStopSignature = null;
+              return allSignatures;
+            }
+            if (sig.err === null) {
+              allSignatures.push(sig);
+            }
+          }
+
+          // Move to older signatures for next iteration
+          beforeSignature = batch[batch.length - 1].signature;
+
+          // Log progress for large gaps (but continue - don't lose data!)
+          if (allSignatures.length > 0 && allSignatures.length % 10000 === 0) {
+            logger.info({ count: allSignatures.length }, "Large gap being processed, continuing pagination...");
+          }
+
+          // Memory safety: limit max signatures to process in one poll cycle
+          if (allSignatures.length > 100000) {
+            logger.warn({
+              count: allSignatures.length,
+              continuationPoint: beforeSignature,
+              stopSignature: stopSignature
+            }, "Large gap detected, will continue from checkpoint in next cycle");
+            // Store continuation point and original stop signature
+            this.pendingContinuation = beforeSignature!;
+            // Only set pendingStopSignature if not already set (first time hitting limit)
+            if (!this.pendingStopSignature) {
+              this.pendingStopSignature = this.lastSignature;
+            }
+            break;
+          }
+
+          // Small delay to avoid rate limiting during pagination
+          if (batch.length >= this.batchSize) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          } else {
+            // Got fewer than requested, no more signatures
+            this.pendingStopSignature = null;
+            break;
+          }
+
+          retryCount = 0; // Reset on success
+        } catch (innerError) {
+          retryCount++;
+          logger.warn({ error: innerError, retryCount }, "Error during signature pagination");
+
+          if (retryCount >= 3) {
+            logger.error("Too many pagination errors, returning partial results");
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 500 * retryCount));
         }
-        if (sig.err === null) {
-          allSignatures.push(sig);
-        }
       }
 
-      // Move to older signatures for next iteration
-      beforeSignature = batch[batch.length - 1].signature;
-
-      // Log progress for large gaps (but continue - don't lose data!)
-      if (allSignatures.length > 0 && allSignatures.length % 10000 === 0) {
-        logger.info({ count: allSignatures.length }, "Large gap being processed, continuing pagination...");
-      }
-
-      // Small delay to avoid rate limiting during pagination
-      if (batch.length >= this.batchSize) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      } else {
-        // Got fewer than requested, no more signatures
-        break;
-      }
+      return allSignatures;
+    } catch (error) {
+      logger.error({ error }, "Error fetching signatures");
+      return [];
     }
-
-    return allSignatures;
   }
 
   private async processTransaction(sig: ConfirmedSignatureInfo, txIndex?: number): Promise<void> {

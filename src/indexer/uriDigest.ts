@@ -5,10 +5,256 @@
 
 import { createHash } from "crypto";
 import { lookup } from "dns/promises";
+import DOMPurify from "isomorphic-dompurify";
 import { config } from "../config.js";
 import { createChildLogger } from "../logger.js";
 
 const logger = createChildLogger("uri-digest");
+
+// ============================================================================
+// XSS/Injection Protection
+// ============================================================================
+
+/** Allowed URL protocols for metadata fields (image, endpoints, etc.) */
+const ALLOWED_URL_PROTOCOLS = new Set(["https:", "http:", "ipfs:", "ar:"]);
+
+/**
+ * Sanitize text fields - strips all HTML tags and dangerous content
+ * Used for: name, description, type, and other text fields
+ */
+export function sanitizeText(text: string): string {
+  if (!text || typeof text !== "string") return "";
+  // DOMPurify with ALLOWED_TAGS=[] strips all HTML, leaving plain text
+  return DOMPurify.sanitize(text, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] }).trim();
+}
+
+/**
+ * Validate and sanitize URL fields
+ * Only allows https, http, ipfs, ar protocols
+ * Returns empty string if URL is invalid or uses forbidden protocol
+ */
+export function sanitizeUrl(url: string): string {
+  if (!url || typeof url !== "string") return "";
+
+  // Handle IPFS and Arweave URIs (non-standard protocol format)
+  if (url.startsWith("ipfs://") || url.startsWith("ar://")) {
+    // Strip any HTML/script injection attempts in the path
+    const sanitized = DOMPurify.sanitize(url, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] }).trim();
+    // Verify it's still a valid URI after sanitization and has a valid path
+    if (sanitized.startsWith("ipfs://") && sanitized.length > 7) {
+      // IPFS CID must be alphanumeric (base58/base32)
+      const cid = sanitized.slice(7);
+      if (/^[a-zA-Z0-9]+$/.test(cid.split("/")[0])) {
+        return sanitized;
+      }
+    }
+    if (sanitized.startsWith("ar://") && sanitized.length > 5) {
+      // Arweave TX ID is base64url
+      const txId = sanitized.slice(5);
+      if (/^[a-zA-Z0-9_-]+$/.test(txId.split("/")[0])) {
+        return sanitized;
+      }
+    }
+    return "";
+  }
+
+  try {
+    const parsed = new URL(url);
+    if (!ALLOWED_URL_PROTOCOLS.has(parsed.protocol)) {
+      logger.warn({ url, protocol: parsed.protocol }, "Blocked URL with forbidden protocol");
+      return "";
+    }
+    // Return the normalized URL (handles encoding issues)
+    return parsed.toString();
+  } catch {
+    logger.warn({ url }, "Invalid URL format");
+    return "";
+  }
+}
+
+/**
+ * Sanitize services array (ERC-8004 spec)
+ * Format: [{ name: "MCP"|"A2A"|"OASF"|..., endpoint: "https://...", version: "1.0", ... }]
+ */
+function sanitizeServices(arr: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(arr)) return [];
+
+  const validServiceNames = new Set(["mcp", "a2a", "oasf", "ens", "did", "agentwallet"]);
+  const slugRegex = /^[a-z0-9-]+$/;
+
+  return arr
+    .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
+    .map((item) => {
+      const service: Record<string, unknown> = {};
+
+      // Required: name (service type)
+      if (typeof item.name === "string") {
+        const name = sanitizeText(item.name.toLowerCase());
+        if (validServiceNames.has(name)) {
+          service.name = name;
+        } else {
+          return null; // Invalid service name
+        }
+      } else {
+        return null;
+      }
+
+      // Required: endpoint URL
+      if (typeof item.endpoint === "string") {
+        const endpoint = sanitizeUrl(item.endpoint);
+        if (endpoint) {
+          service.endpoint = endpoint;
+        } else {
+          return null; // Invalid endpoint
+        }
+      }
+
+      // Optional: version
+      if (typeof item.version === "string") {
+        service.version = sanitizeText(item.version).slice(0, 20);
+      }
+
+      // Optional: mcpTools (array of tool names for MCP services)
+      if (Array.isArray(item.mcpTools)) {
+        service.mcpTools = item.mcpTools
+          .filter((t): t is string => typeof t === "string")
+          .map((t) => sanitizeText(t))
+          .filter((t) => t.length > 0)
+          .slice(0, 100);
+      }
+
+      // Optional: a2aSkills (array of skill paths for A2A services)
+      if (Array.isArray(item.a2aSkills)) {
+        service.a2aSkills = item.a2aSkills
+          .filter((s): s is string => typeof s === "string")
+          .map((s) => sanitizeText(s))
+          .filter((s) => s.length > 0)
+          .slice(0, 100);
+      }
+
+      // Optional: skills (OASF taxonomy)
+      if (Array.isArray(item.skills)) {
+        service.skills = item.skills
+          .filter((s): s is string => typeof s === "string" && slugRegex.test(s))
+          .slice(0, 50);
+      }
+
+      // Optional: domains (OASF taxonomy)
+      if (Array.isArray(item.domains)) {
+        service.domains = item.domains
+          .filter((d): d is string => typeof d === "string" && slugRegex.test(d))
+          .slice(0, 50);
+      }
+
+      return service;
+    })
+    .filter((s): s is Record<string, unknown> => s !== null)
+    .slice(0, 20); // Limit services
+}
+
+/**
+ * Sanitize registrations array (ERC-8004 spec)
+ * Format: [{ agentId: number, agentRegistry: "namespace:chainId:contractAddress" }]
+ */
+function sanitizeRegistrationsArray(arr: unknown): Array<{ agentId: number | string; agentRegistry: string }> {
+  if (!Array.isArray(arr)) return [];
+
+  // Registry format: namespace:chainId:contractAddress (e.g., "eip155:1:0x...")
+  const registryRegex = /^[a-z0-9]+:[a-z0-9]+:[a-zA-Z0-9]+$/;
+
+  return arr
+    .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
+    .map((item) => {
+      // agentId can be number or string (for large IDs)
+      let agentId: number | string | null = null;
+      if (typeof item.agentId === "number") {
+        agentId = item.agentId;
+      } else if (typeof item.agentId === "string") {
+        agentId = sanitizeText(item.agentId);
+      }
+
+      // agentRegistry must match format
+      let agentRegistry: string | null = null;
+      if (typeof item.agentRegistry === "string") {
+        const reg = sanitizeText(item.agentRegistry);
+        if (registryRegex.test(reg)) {
+          agentRegistry = reg;
+        }
+      }
+
+      if (agentId !== null && agentRegistry !== null) {
+        return { agentId, agentRegistry };
+      }
+      return null;
+    })
+    .filter((r): r is { agentId: number | string; agentRegistry: string } => r !== null)
+    .slice(0, 20);
+}
+
+/**
+ * Apply appropriate sanitization based on field key
+ * Follows ERC-8004 Registration File v1 spec
+ */
+function sanitizeField(key: string, value: unknown): unknown {
+  // Text fields - strip all HTML
+  if (key === "_uri:name" || key === "_uri:description" || key === "_uri:type") {
+    return typeof value === "string" ? sanitizeText(value) : null;
+  }
+
+  // URL fields - validate protocol
+  if (key === "_uri:image") {
+    return typeof value === "string" ? sanitizeUrl(value) : null;
+  }
+
+  // Services array (ERC-8004 spec)
+  if (key === "_uri:services") {
+    return sanitizeServices(value);
+  }
+
+  // Registrations array (ERC-8004 spec)
+  if (key === "_uri:registrations") {
+    return sanitizeRegistrationsArray(value);
+  }
+
+  // Trust mechanisms array (ERC-8004 spec)
+  if (key === "_uri:supported_trust") {
+    if (!Array.isArray(value)) return [];
+    const validTrusts = ["reputation", "crypto-economic", "8004", "oasf", "x402"];
+    return value
+      .filter((v): v is string => typeof v === "string")
+      .map((v) => sanitizeText(v.toLowerCase()))
+      .filter((v) => validTrusts.includes(v));
+  }
+
+  // Boolean fields
+  if (key === "_uri:active" || key === "_uri:x402_support") {
+    return typeof value === "boolean" ? value : null;
+  }
+
+  // Unknown fields (in full mode) - sanitize as text if string, otherwise serialize safely
+  if (typeof value === "string") {
+    return sanitizeText(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    // Sanitize array items
+    return value.slice(0, 100).map((item) =>
+      typeof item === "string" ? sanitizeText(item) : item
+    );
+  }
+  if (typeof value === "object" && value !== null) {
+    // Return stringified for safety (prevents nested injection)
+    return JSON.stringify(value).slice(0, 10000);
+  }
+
+  return null;
+}
+
+// ============================================================================
+// SSRF Protection
+// ============================================================================
 
 // SSRF protection: blocked hostnames and IP patterns
 const BLOCKED_HOSTS = new Set([
@@ -311,18 +557,22 @@ export interface UriDigestResult {
  */
 // Prefix "_uri:" for indexer-derived metadata to avoid collision with on-chain metadata
 // Users can set on-chain metadata with any key, so we use underscore prefix for internal keys
+/**
+ * ERC-8004 Registration File v1 Standard Fields
+ * Ref: https://github.com/erc-8004/best-practices/blob/main/Registration.md
+ */
 const STANDARD_FIELDS: Record<string, string> = {
-  type: "_uri:type",
-  name: "_uri:name",
-  description: "_uri:description",
-  image: "_uri:image",
-  endpoints: "_uri:endpoints",
-  registrations: "_uri:registrations",
-  supportedTrusts: "_uri:supported_trusts",
-  active: "_uri:active",
-  x402support: "_uri:x402_support",
-  skills: "_uri:skills",
-  domains: "_uri:domains",
+  // Required fields
+  type: "_uri:type",                    // "https://eips.ethereum.org/EIPS/eip-8004#registration-v1"
+  name: "_uri:name",                    // Agent display name
+  description: "_uri:description",      // Detailed capabilities description
+  image: "_uri:image",                  // Logo URL (PNG, SVG, WebP)
+  services: "_uri:services",            // Communication methods and capabilities
+  registrations: "_uri:registrations",  // On-chain identity references
+  // Optional fields
+  active: "_uri:active",                // Production readiness flag
+  x402Support: "_uri:x402_support",     // Proof-of-payment protocol support
+  supportedTrust: "_uri:supported_trust", // Trust mechanisms array
 };
 
 // Maximum redirect depth to prevent infinite loops
@@ -465,13 +715,17 @@ export async function digestUri(uri: string, redirectDepth: number = 0): Promise
       return { status: "invalid_json", bytes: totalBytes, hash };
     }
 
-    // Extract standard fields
+    // Extract and sanitize standard fields
     const fields: Record<string, unknown> = {};
     const standardKeys = new Set(Object.keys(STANDARD_FIELDS));
 
     for (const [jsonKey, metaKey] of Object.entries(STANDARD_FIELDS)) {
       if (json[jsonKey] !== undefined) {
-        fields[metaKey] = json[jsonKey];
+        // Apply sanitization based on field type
+        const sanitized = sanitizeField(metaKey, json[jsonKey]);
+        if (sanitized !== null && sanitized !== "" && !(Array.isArray(sanitized) && sanitized.length === 0)) {
+          fields[metaKey] = sanitized;
+        }
       }
     }
 
@@ -488,8 +742,12 @@ export async function digestUri(uri: string, redirectDepth: number = 0): Promise
             truncatedKeys = true;
             break;
           }
-          // Store with _uri: prefix (internal) to avoid collision with on-chain metadata
-          fields[`_uri:${key}`] = value;
+          // Store with _uri: prefix (internal) and sanitize
+          const metaKey = `_uri:${key}`;
+          const sanitized = sanitizeField(metaKey, value);
+          if (sanitized !== null && sanitized !== "") {
+            fields[metaKey] = sanitized;
+          }
           extraKeyCount++;
         }
       }

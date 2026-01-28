@@ -6,9 +6,9 @@ import {
 
 describe("Parser Types", () => {
   describe("EVENT_DISCRIMINATORS", () => {
-    it("should contain all 15 event discriminators", () => {
+    it("should contain all 14 event discriminators", () => {
       const eventNames = Object.keys(EVENT_DISCRIMINATORS);
-      expect(eventNames).toHaveLength(15);
+      expect(eventNames).toHaveLength(14);
     });
 
     it("should have correct event names", () => {
@@ -17,7 +17,6 @@ describe("Parser Types", () => {
         "AgentRegisteredInRegistry",
         "AtomEnabled",
         "BaseRegistryCreated",
-        "BaseRegistryRotated",
         "FeedbackRevoked",
         "MetadataDeleted",
         "MetadataSet",

@@ -18,14 +18,22 @@ const logger = createChildLogger("uri-digest");
 /** Allowed URL protocols for metadata fields (image, endpoints, etc.) */
 const ALLOWED_URL_PROTOCOLS = new Set(["https:", "http:", "ipfs:", "ar:"]);
 
+/** Max string length before DOMPurify (prevent CPU exhaustion from nested HTML) */
+const MAX_SANITIZE_INPUT_LENGTH = 1000;
+
 /**
  * Sanitize text fields - strips all HTML tags and dangerous content
  * Used for: name, description, type, and other text fields
+ * Truncates input to prevent CPU exhaustion from deeply nested HTML
  */
 export function sanitizeText(text: string): string {
   if (!text || typeof text !== "string") return "";
+  // Truncate before DOMPurify to prevent CPU exhaustion (ReDoS-like with nested HTML)
+  const truncated = text.length > MAX_SANITIZE_INPUT_LENGTH
+    ? text.slice(0, MAX_SANITIZE_INPUT_LENGTH)
+    : text;
   // DOMPurify with ALLOWED_TAGS=[] strips all HTML, leaving plain text
-  return DOMPurify.sanitize(text, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] }).trim();
+  return DOMPurify.sanitize(truncated, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] }).trim();
 }
 
 /**
@@ -36,10 +44,15 @@ export function sanitizeText(text: string): string {
 export function sanitizeUrl(url: string): string {
   if (!url || typeof url !== "string") return "";
 
+  // Truncate before DOMPurify to prevent CPU exhaustion (same as sanitizeText)
+  const truncated = url.length > MAX_SANITIZE_INPUT_LENGTH
+    ? url.slice(0, MAX_SANITIZE_INPUT_LENGTH)
+    : url;
+
   // Handle IPFS and Arweave URIs (non-standard protocol format)
-  if (url.startsWith("ipfs://") || url.startsWith("ar://")) {
+  if (truncated.startsWith("ipfs://") || truncated.startsWith("ar://")) {
     // Strip any HTML/script injection attempts in the path
-    const sanitized = DOMPurify.sanitize(url, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] }).trim();
+    const sanitized = DOMPurify.sanitize(truncated, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] }).trim();
     // Verify it's still a valid URI after sanitization and has a valid path
     if (sanitized.startsWith("ipfs://") && sanitized.length > 7) {
       // IPFS CID must be alphanumeric (base58/base32)
@@ -59,15 +72,15 @@ export function sanitizeUrl(url: string): string {
   }
 
   try {
-    const parsed = new URL(url);
+    const parsed = new URL(truncated);
     if (!ALLOWED_URL_PROTOCOLS.has(parsed.protocol)) {
-      logger.warn({ url, protocol: parsed.protocol }, "Blocked URL with forbidden protocol");
+      logger.warn({ url: truncated, protocol: parsed.protocol }, "Blocked URL with forbidden protocol");
       return "";
     }
     // Return the normalized URL (handles encoding issues)
     return parsed.toString();
   } catch {
-    logger.warn({ url }, "Invalid URL format");
+    logger.warn({ url: truncated }, "Invalid URL format");
     return "";
   }
 }
@@ -82,7 +95,9 @@ function sanitizeServices(arr: unknown): Array<Record<string, unknown>> {
   const validServiceNames = new Set(["mcp", "a2a", "oasf", "ens", "did", "agentwallet"]);
   const slugRegex = /^[a-z0-9-]+$/;
 
+  // SLICE FIRST to prevent CPU exhaustion via large arrays
   return arr
+    .slice(0, 20) // Limit BEFORE processing
     .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
     .map((item) => {
       const service: Record<string, unknown> = {};
@@ -148,8 +163,8 @@ function sanitizeServices(arr: unknown): Array<Record<string, unknown>> {
 
       return service;
     })
-    .filter((s): s is Record<string, unknown> => s !== null)
-    .slice(0, 20); // Limit services
+    .filter((s): s is Record<string, unknown> => s !== null);
+    // Note: slice is done FIRST (before map) to prevent CPU exhaustion
 }
 
 /**
@@ -162,7 +177,9 @@ function sanitizeRegistrationsArray(arr: unknown): Array<{ agentId: number | str
   // Registry format: namespace:chainId:contractAddress (e.g., "eip155:1:0x...")
   const registryRegex = /^[a-z0-9]+:[a-z0-9]+:[a-zA-Z0-9]+$/;
 
+  // SLICE FIRST to prevent CPU exhaustion via large arrays
   return arr
+    .slice(0, 20) // Limit BEFORE processing
     .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
     .map((item) => {
       // agentId can be number or string (for large IDs)
@@ -187,8 +204,8 @@ function sanitizeRegistrationsArray(arr: unknown): Array<{ agentId: number | str
       }
       return null;
     })
-    .filter((r): r is { agentId: number | string; agentRegistry: string } => r !== null)
-    .slice(0, 20);
+    .filter((r): r is { agentId: number | string; agentRegistry: string } => r !== null);
+    // Note: slice is done FIRST (before map) to prevent CPU exhaustion
 }
 
 /**
@@ -220,7 +237,9 @@ function sanitizeField(key: string, value: unknown): unknown {
   if (key === "_uri:supported_trust") {
     if (!Array.isArray(value)) return [];
     const validTrusts = ["reputation", "crypto-economic", "8004", "oasf", "x402"];
+    // SLICE FIRST to prevent CPU exhaustion, then filter/sanitize
     return value
+      .slice(0, 20) // Limit BEFORE processing
       .filter((v): v is string => typeof v === "string")
       .map((v) => sanitizeText(v.toLowerCase()))
       .filter((v) => validTrusts.includes(v));
@@ -355,6 +374,9 @@ function isIPv6LoopbackOrUnspecified(ipv6: string): boolean {
  * Returns null if not a recognized IP format
  */
 function canonicalizeIP(ip: string): { ipv4: string } | { ipv6: string } | null {
+  // Max IP length: IPv6 + zone ID ≈ 60 chars, add margin for safety
+  if (ip.length > 100) return null;
+
   let lower = ip.toLowerCase();
 
   // Strip IPv6 zone ID (%interface) - e.g., ::1%lo0 or ::1%25lo0 (URL-encoded)

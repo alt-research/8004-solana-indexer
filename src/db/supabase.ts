@@ -23,9 +23,13 @@ import {
   ValidationResponded,
 } from "../parser/types.js";
 import { createChildLogger } from "../logger.js";
-import { config } from "../config.js";
+import { config, ChainStatus } from "../config.js";
+import type { PoolClient } from "pg";
 
 const logger = createChildLogger("supabase-handlers");
+
+// Default status for new records (will be verified later)
+const DEFAULT_STATUS: ChainStatus = "PENDING";
 
 export interface EventContext {
   signature: string;
@@ -211,6 +215,124 @@ export async function handleEvent(
   }
 }
 
+/**
+ * Atomic event handler - wraps event processing and cursor update in a single PostgreSQL transaction
+ * This ensures crash/reorg resilience: either both succeed or both fail
+ */
+export async function handleEventAtomic(
+  event: ProgramEvent,
+  ctx: EventContext & { source?: "poller" | "websocket" }
+): Promise<void> {
+  const db = getPool();
+  const client = await db.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    // Handle event inside transaction
+    await handleEventInTx(client, event, ctx);
+
+    // Update cursor atomically with monotonic guard
+    await updateCursorAtomic(client, ctx);
+
+    await client.query("COMMIT");
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+    eventStats.errors++;
+    logger.error({
+      error: error.message,
+      eventType: event.type,
+      signature: ctx.signature,
+      slot: ctx.slot.toString(),
+    }, "Atomic event handling failed, rolled back");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Update indexer cursor with monotonic guard
+ * Only advances if the new slot is greater than the current slot
+ */
+async function updateCursorAtomic(
+  client: PoolClient,
+  ctx: EventContext & { source?: string }
+): Promise<void> {
+  await client.query(
+    `INSERT INTO indexer_state (id, last_signature, last_slot, source, updated_at)
+     VALUES ('main', $1, $2, $3, NOW())
+     ON CONFLICT (id) DO UPDATE SET
+       last_signature = EXCLUDED.last_signature,
+       last_slot = EXCLUDED.last_slot,
+       source = EXCLUDED.source,
+       updated_at = NOW()
+     WHERE indexer_state.last_slot IS NULL OR indexer_state.last_slot < EXCLUDED.last_slot`,
+    [ctx.signature, ctx.slot.toString(), ctx.source || "poller"]
+  );
+}
+
+/**
+ * Inner event handler - runs inside transaction
+ */
+async function handleEventInTx(
+  client: PoolClient,
+  event: ProgramEvent,
+  ctx: EventContext
+): Promise<void> {
+  switch (event.type) {
+    case "AgentRegisteredInRegistry":
+      await handleAgentRegisteredTx(client, event.data, ctx);
+      eventStats.agentRegistered++;
+      break;
+    case "AgentOwnerSynced":
+      await handleAgentOwnerSyncedTx(client, event.data, ctx);
+      break;
+    case "AtomEnabled":
+      await handleAtomEnabledTx(client, event.data, ctx);
+      break;
+    case "UriUpdated":
+      await handleUriUpdatedTx(client, event.data, ctx);
+      break;
+    case "WalletUpdated":
+      await handleWalletUpdatedTx(client, event.data, ctx);
+      break;
+    case "MetadataSet":
+      await handleMetadataSetTx(client, event.data, ctx);
+      eventStats.metadataSet++;
+      break;
+    case "MetadataDeleted":
+      await handleMetadataDeletedTx(client, event.data, ctx);
+      break;
+    case "BaseRegistryCreated":
+      await handleBaseRegistryCreatedTx(client, event.data, ctx);
+      break;
+    case "UserRegistryCreated":
+      await handleUserRegistryCreatedTx(client, event.data, ctx);
+      break;
+    case "NewFeedback":
+      await handleNewFeedbackTx(client, event.data, ctx);
+      eventStats.feedbackReceived++;
+      break;
+    case "FeedbackRevoked":
+      await handleFeedbackRevokedTx(client, event.data, ctx);
+      break;
+    case "ResponseAppended":
+      await handleResponseAppendedTx(client, event.data, ctx);
+      break;
+    case "ValidationRequested":
+      await handleValidationRequestedTx(client, event.data, ctx);
+      eventStats.validationRequested++;
+      break;
+    case "ValidationResponded":
+      await handleValidationRespondedTx(client, event.data, ctx);
+      eventStats.validationResponded++;
+      break;
+    default:
+      logger.warn({ event }, "Unhandled event type");
+  }
+}
+
 async function ensureCollection(collection: string): Promise<void> {
   // Use LRU cache to check if we've seen this collection recently
   if (hasSeenCollection(collection)) return;
@@ -218,10 +340,10 @@ async function ensureCollection(collection: string): Promise<void> {
   const db = getPool();
   try {
     await db.query(
-      `INSERT INTO collections (collection, registry_type, created_at)
-       VALUES ($1, $2, $3)
+      `INSERT INTO collections (collection, registry_type, created_at, status)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (collection) DO NOTHING`,
-      [collection, "BASE", new Date().toISOString()]
+      [collection, "BASE", new Date().toISOString(), DEFAULT_STATUS]
     );
     // Only cache after successful DB operation
     markCollectionSeen(collection);
@@ -231,6 +353,376 @@ async function ensureCollection(collection: string): Promise<void> {
     eventStats.errors++;
     logger.error({ error: error.message, collection }, "Failed to ensure collection");
   }
+}
+
+async function ensureCollectionTx(client: PoolClient, collection: string): Promise<void> {
+  if (hasSeenCollection(collection)) return;
+  try {
+    await client.query(
+      `INSERT INTO collections (collection, registry_type, created_at, status)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (collection) DO NOTHING`,
+      [collection, "BASE", new Date().toISOString(), DEFAULT_STATUS]
+    );
+    markCollectionSeen(collection);
+  } catch (error: any) {
+    eventStats.errors++;
+    logger.error({ error: error.message, collection }, "Failed to ensure collection");
+  }
+}
+
+// Transaction-aware handlers for atomic ingestion
+
+async function handleAgentRegisteredTx(
+  client: PoolClient,
+  data: AgentRegisteredInRegistry,
+  ctx: EventContext
+): Promise<void> {
+  const assetId = data.asset.toBase58();
+  const collection = data.collection.toBase58();
+  const agentUri = data.agentUri || null;
+  await ensureCollectionTx(client, collection);
+  await client.query(
+    `INSERT INTO agents (asset, owner, agent_uri, collection, atom_enabled, block_slot, tx_index, tx_signature, created_at, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     ON CONFLICT (asset) DO UPDATE SET
+       owner = EXCLUDED.owner,
+       agent_uri = EXCLUDED.agent_uri,
+       atom_enabled = EXCLUDED.atom_enabled,
+       block_slot = EXCLUDED.block_slot,
+       tx_index = EXCLUDED.tx_index,
+       updated_at = EXCLUDED.created_at`,
+    [assetId, data.owner.toBase58(), agentUri, collection, data.atomEnabled, ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString(), DEFAULT_STATUS]
+  );
+  logger.info({ assetId, owner: data.owner.toBase58(), uri: agentUri }, "Agent registered");
+}
+
+async function handleAgentOwnerSyncedTx(
+  client: PoolClient,
+  data: AgentOwnerSynced,
+  ctx: EventContext
+): Promise<void> {
+  const assetId = data.asset.toBase58();
+  await client.query(
+    `UPDATE agents SET owner = $1, block_slot = $2, updated_at = $3 WHERE asset = $4`,
+    [data.newOwner.toBase58(), ctx.slot.toString(), ctx.blockTime.toISOString(), assetId]
+  );
+  logger.info({ assetId, oldOwner: data.oldOwner.toBase58(), newOwner: data.newOwner.toBase58() }, "Agent owner synced");
+}
+
+async function handleAtomEnabledTx(
+  client: PoolClient,
+  data: AtomEnabled,
+  ctx: EventContext
+): Promise<void> {
+  const assetId = data.asset.toBase58();
+  await client.query(
+    `UPDATE agents SET atom_enabled = true, block_slot = $1, updated_at = $2 WHERE asset = $3`,
+    [ctx.slot.toString(), ctx.blockTime.toISOString(), assetId]
+  );
+  logger.info({ assetId, enabledBy: data.enabledBy.toBase58() }, "ATOM enabled");
+}
+
+async function handleUriUpdatedTx(
+  client: PoolClient,
+  data: UriUpdated,
+  ctx: EventContext
+): Promise<void> {
+  const assetId = data.asset.toBase58();
+  const newUri = data.newUri || null;
+  await client.query(
+    `UPDATE agents SET agent_uri = $1, block_slot = $2, updated_at = $3 WHERE asset = $4`,
+    [newUri, ctx.slot.toString(), ctx.blockTime.toISOString(), assetId]
+  );
+  logger.info({ assetId, newUri }, "Agent URI updated");
+}
+
+async function handleWalletUpdatedTx(
+  client: PoolClient,
+  data: WalletUpdated,
+  ctx: EventContext
+): Promise<void> {
+  const assetId = data.asset.toBase58();
+  const newWalletRaw = data.newWallet.toBase58();
+  const newWallet = newWalletRaw === DEFAULT_PUBKEY ? null : newWalletRaw;
+  await client.query(
+    `UPDATE agents SET agent_wallet = $1, block_slot = $2, updated_at = $3 WHERE asset = $4`,
+    [newWallet, ctx.slot.toString(), ctx.blockTime.toISOString(), assetId]
+  );
+  logger.info({ assetId, newWallet: newWallet ?? "(reset)" }, "Agent wallet updated");
+}
+
+async function handleMetadataSetTx(
+  client: PoolClient,
+  data: MetadataSet,
+  ctx: EventContext
+): Promise<void> {
+  if (data.key.startsWith("_uri:")) {
+    logger.warn({ assetId: data.asset.toBase58(), key: data.key }, "Skipping reserved _uri: prefix");
+    return;
+  }
+  const assetId = data.asset.toBase58();
+  const keyHash = createHash("sha256").update(data.key).digest().slice(0, 16).toString("hex");
+  const id = `${assetId}:${keyHash}`;
+  const compressedValue = await compressForStorage(Buffer.from(data.value));
+  await client.query(
+    `INSERT INTO metadata (id, asset, key, key_hash, value, immutable, block_slot, tx_index, tx_signature, updated_at, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     ON CONFLICT (id) DO UPDATE SET
+       value = EXCLUDED.value,
+       immutable = metadata.immutable OR EXCLUDED.immutable,
+       block_slot = EXCLUDED.block_slot,
+       tx_index = EXCLUDED.tx_index,
+       updated_at = EXCLUDED.updated_at`,
+    [id, assetId, data.key, keyHash, compressedValue, data.immutable, ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString(), DEFAULT_STATUS]
+  );
+  logger.info({ assetId, key: data.key }, "Metadata set");
+}
+
+async function handleMetadataDeletedTx(
+  client: PoolClient,
+  data: MetadataDeleted,
+  _ctx: EventContext
+): Promise<void> {
+  const assetId = data.asset.toBase58();
+  await client.query(`DELETE FROM metadata WHERE asset = $1 AND key = $2`, [assetId, data.key]);
+  logger.info({ assetId, key: data.key }, "Metadata deleted");
+}
+
+async function handleBaseRegistryCreatedTx(
+  client: PoolClient,
+  data: BaseRegistryCreated,
+  ctx: EventContext
+): Promise<void> {
+  const collection = data.collection.toBase58();
+  await client.query(
+    `INSERT INTO collections (collection, registry_type, authority, created_at, status)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (collection) DO UPDATE SET
+       registry_type = EXCLUDED.registry_type,
+       authority = EXCLUDED.authority`,
+    [collection, "BASE", data.createdBy.toBase58(), ctx.blockTime.toISOString(), DEFAULT_STATUS]
+  );
+  logger.info({ registryId: data.registry.toBase58() }, "Base registry created");
+}
+
+async function handleUserRegistryCreatedTx(
+  client: PoolClient,
+  data: UserRegistryCreated,
+  ctx: EventContext
+): Promise<void> {
+  const collection = data.collection.toBase58();
+  await client.query(
+    `INSERT INTO collections (collection, registry_type, authority, created_at, status)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (collection) DO UPDATE SET
+       registry_type = EXCLUDED.registry_type,
+       authority = EXCLUDED.authority`,
+    [collection, "USER", data.owner.toBase58(), ctx.blockTime.toISOString(), DEFAULT_STATUS]
+  );
+  logger.info({ registryId: data.registry.toBase58(), owner: data.owner.toBase58() }, "User registry created");
+}
+
+async function handleNewFeedbackTx(
+  client: PoolClient,
+  data: NewFeedback,
+  ctx: EventContext
+): Promise<void> {
+  const assetId = data.asset.toBase58();
+  const clientAddress = data.clientAddress.toBase58();
+  const id = `${assetId}:${clientAddress}:${data.feedbackIndex}`;
+  const isAllZeroHash = data.feedbackHash && data.feedbackHash.every(b => b === 0);
+  const feedbackHash = (data.feedbackHash && !isAllZeroHash)
+    ? Buffer.from(data.feedbackHash).toString("hex")
+    : null;
+  const insertResult = await client.query(
+    `INSERT INTO feedbacks (id, asset, client_address, feedback_index, value, value_decimals, score, tag1, tag2, endpoint, feedback_uri, feedback_hash,
+       is_revoked, block_slot, tx_index, tx_signature, created_at, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+     ON CONFLICT (id) DO NOTHING`,
+    [
+      id, assetId, clientAddress, data.feedbackIndex.toString(),
+      data.value.toString(), data.valueDecimals, data.score,
+      data.tag1 || null, data.tag2 || null, data.endpoint || null, data.feedbackUri || null,
+      feedbackHash,
+      false, ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString(), DEFAULT_STATUS
+    ]
+  );
+  if (insertResult.rowCount === 0) {
+    logger.info({ assetId, feedbackIndex: data.feedbackIndex.toString() }, "Duplicate feedback ignored");
+    return;
+  }
+  const baseUpdate = `
+    feedback_count = COALESCE((
+      SELECT COUNT(*)::int
+      FROM feedbacks
+      WHERE asset = $2 AND NOT is_revoked
+    ), 0),
+    raw_avg_score = COALESCE((
+      SELECT ROUND(AVG(score))::smallint
+      FROM feedbacks
+      WHERE asset = $2 AND NOT is_revoked
+    ), 0),
+    updated_at = $1
+  `;
+  if (data.atomEnabled) {
+    await client.query(
+      `UPDATE agents SET
+         trust_tier = $3,
+         quality_score = $4,
+         confidence = $5,
+         risk_score = $6,
+         diversity_ratio = $7,
+         ${baseUpdate}
+       WHERE asset = $2`,
+      [
+        ctx.blockTime.toISOString(),
+        assetId,
+        data.newTrustTier,
+        data.newQualityScore,
+        data.newConfidence,
+        data.newRiskScore,
+        data.newDiversityRatio,
+      ]
+    );
+  } else {
+    await client.query(
+      `UPDATE agents SET
+         ${baseUpdate}
+       WHERE asset = $2`,
+      [ctx.blockTime.toISOString(), assetId]
+    );
+  }
+  logger.info({ assetId, feedbackIndex: data.feedbackIndex.toString(), score: data.score, trustTier: data.newTrustTier }, "New feedback");
+}
+
+async function handleFeedbackRevokedTx(
+  client: PoolClient,
+  data: FeedbackRevoked,
+  ctx: EventContext
+): Promise<void> {
+  const assetId = data.asset.toBase58();
+  const clientAddress = data.clientAddress.toBase58();
+  const id = `${assetId}:${clientAddress}:${data.feedbackIndex}`;
+  await client.query(
+    `UPDATE feedbacks SET
+       is_revoked = true,
+       revoked_at = $1
+     WHERE id = $2`,
+    [ctx.blockTime.toISOString(), id]
+  );
+  const baseUpdate = `
+    feedback_count = COALESCE((
+      SELECT COUNT(*)::int
+      FROM feedbacks
+      WHERE asset = $2 AND NOT is_revoked
+    ), 0),
+    raw_avg_score = COALESCE((
+      SELECT ROUND(AVG(score))::smallint
+      FROM feedbacks
+      WHERE asset = $2 AND NOT is_revoked
+    ), 0),
+    updated_at = $1
+  `;
+  await client.query(
+    `UPDATE agents SET
+       ${baseUpdate}
+     WHERE asset = $2`,
+    [ctx.blockTime.toISOString(), assetId]
+  );
+  if (data.atomEnabled && data.hadImpact) {
+    await client.query(
+      `UPDATE agents SET
+         trust_tier = $3,
+         quality_score = $4,
+         confidence = $5,
+         updated_at = $1
+       WHERE asset = $2`,
+      [ctx.blockTime.toISOString(), assetId, data.newTrustTier, data.newQualityScore, data.newConfidence]
+    );
+  }
+  logger.info({ assetId, feedbackIndex: data.feedbackIndex.toString(), hadImpact: data.hadImpact }, "Feedback revoked");
+}
+
+async function handleResponseAppendedTx(
+  client: PoolClient,
+  data: ResponseAppended,
+  ctx: EventContext
+): Promise<void> {
+  const assetId = data.asset.toBase58();
+  const clientAddress = data.client.toBase58();
+  const responder = data.responder.toBase58();
+  const id = `${assetId}:${clientAddress}:${data.feedbackIndex}:${responder}:${ctx.signature}`;
+  const feedbackCheck = await client.query(
+    `SELECT id FROM feedbacks WHERE asset = $1 AND client_address = $2 AND feedback_index = $3 LIMIT 1`,
+    [assetId, clientAddress, data.feedbackIndex.toString()]
+  );
+  if (feedbackCheck.rowCount === 0) {
+    logger.warn({ assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
+      "Feedback not found for response - storing as orphan (will link on backfill)");
+  }
+  const isAllZeroHash = data.responseHash && data.responseHash.every(b => b === 0);
+  const responseHash = (data.responseHash && !isAllZeroHash)
+    ? Buffer.from(data.responseHash).toString("hex")
+    : null;
+  await client.query(
+    `INSERT INTO feedback_responses (id, asset, client_address, feedback_index, responder, response_uri, response_hash, block_slot, tx_index, tx_signature, created_at, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+     ON CONFLICT (id) DO NOTHING`,
+    [id, assetId, clientAddress, data.feedbackIndex.toString(), responder, data.responseUri || null,
+     responseHash,
+     ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString(), DEFAULT_STATUS]
+  );
+  logger.info({ assetId, feedbackIndex: data.feedbackIndex.toString(), responder }, "Response appended");
+}
+
+async function handleValidationRequestedTx(
+  client: PoolClient,
+  data: ValidationRequested,
+  ctx: EventContext
+): Promise<void> {
+  const assetId = data.asset.toBase58();
+  const validatorAddress = data.validatorAddress.toBase58();
+  const id = `${assetId}:${validatorAddress}:${data.nonce}`;
+  await client.query(
+    `INSERT INTO validations (id, asset, validator_address, nonce, requester, request_uri, request_hash, status, block_slot, tx_index, tx_signature, created_at, chain_status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     ON CONFLICT (id) DO UPDATE SET
+       requester = EXCLUDED.requester,
+       request_uri = EXCLUDED.request_uri,
+       request_hash = EXCLUDED.request_hash`,
+    [id, assetId, validatorAddress, data.nonce.toString(), data.requester.toBase58(),
+     data.requestUri || null, data.requestHash ? Buffer.from(data.requestHash).toString("hex") : null,
+     "PENDING", ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString(), DEFAULT_STATUS]
+  );
+  logger.info({ assetId, validator: validatorAddress, nonce: data.nonce }, "Validation requested");
+}
+
+async function handleValidationRespondedTx(
+  client: PoolClient,
+  data: ValidationResponded,
+  ctx: EventContext
+): Promise<void> {
+  const assetId = data.asset.toBase58();
+  const validatorAddress = data.validatorAddress.toBase58();
+  const id = `${assetId}:${validatorAddress}:${data.nonce}`;
+  await client.query(
+    `INSERT INTO validations (id, asset, validator_address, nonce, response, response_uri, response_hash, tag, status, block_slot, tx_index, tx_signature, created_at, updated_at, chain_status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13, $14)
+     ON CONFLICT (id) DO UPDATE SET
+       response = EXCLUDED.response,
+       response_uri = EXCLUDED.response_uri,
+       response_hash = EXCLUDED.response_hash,
+       tag = EXCLUDED.tag,
+       status = EXCLUDED.status,
+       updated_at = EXCLUDED.updated_at`,
+    [id, assetId, validatorAddress, data.nonce.toString(), data.response,
+     data.responseUri || null,
+     data.responseHash ? Buffer.from(data.responseHash).toString("hex") : null,
+     data.tag || null, "RESPONDED",
+     ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString(), DEFAULT_STATUS]
+  );
+  logger.info({ assetId, validator: validatorAddress, nonce: data.nonce, response: data.response }, "Validation responded");
 }
 
 async function handleAgentRegistered(
@@ -648,15 +1140,15 @@ async function handleValidationRequested(
 
   try {
     await db.query(
-      `INSERT INTO validations (id, asset, validator_address, nonce, requester, request_uri, request_hash, status, block_slot, tx_index, tx_signature, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      `INSERT INTO validations (id, asset, validator_address, nonce, requester, request_uri, request_hash, status, block_slot, tx_index, tx_signature, created_at, chain_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        ON CONFLICT (id) DO UPDATE SET
          requester = EXCLUDED.requester,
          request_uri = EXCLUDED.request_uri,
          request_hash = EXCLUDED.request_hash`,
       [id, assetId, validatorAddress, data.nonce.toString(), data.requester.toBase58(),
        data.requestUri || null, data.requestHash ? Buffer.from(data.requestHash).toString("hex") : null,
-       "PENDING", ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString()]
+       "PENDING", ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString(), DEFAULT_STATUS]
     );
     logger.info({ assetId, validator: validatorAddress, nonce: data.nonce }, "Validation requested");
   } catch (error: any) {
@@ -676,8 +1168,8 @@ async function handleValidationResponded(
   try {
     // Use UPSERT to handle case where request wasn't indexed (DB reset, late start, etc.)
     await db.query(
-      `INSERT INTO validations (id, asset, validator_address, nonce, response, response_uri, response_hash, tag, status, block_slot, tx_index, tx_signature, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
+      `INSERT INTO validations (id, asset, validator_address, nonce, response, response_uri, response_hash, tag, status, block_slot, tx_index, tx_signature, created_at, updated_at, chain_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13, $14)
        ON CONFLICT (id) DO UPDATE SET
          response = EXCLUDED.response,
          response_uri = EXCLUDED.response_uri,
@@ -689,7 +1181,7 @@ async function handleValidationResponded(
        data.responseUri || null,
        data.responseHash ? Buffer.from(data.responseHash).toString("hex") : null,
        data.tag || null, "RESPONDED",
-       ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString()]
+       ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString(), DEFAULT_STATUS]
     );
     logger.info({ assetId, validator: validatorAddress, nonce: data.nonce, response: data.response }, "Validation responded");
   } catch (error: any) {
@@ -772,15 +1264,44 @@ import { compressForStorage } from "../utils/compression.js";
 /**
  * Fetch, digest, and store URI metadata for an agent
  * Called asynchronously after agent registration or URI update
+ *
+ * RACE CONDITION PROTECTION: Because URI fetches are queued and network latency varies,
+ * two consecutive URI updates (block N and N+1) might complete out of order.
+ * We check if the agent's current URI matches before writing to prevent stale overwrites.
  */
 async function digestAndStoreUriMetadata(assetId: string, uri: string): Promise<void> {
   if (config.metadataIndexMode === "off") {
     return;
   }
 
+  const db = getPool();
+
+  // RACE CONDITION CHECK: Verify URI hasn't changed while we were queued/fetching
+  // This prevents stale data from overwriting newer data due to out-of-order completion
+  try {
+    const agentResult = await db.query(
+      `SELECT agent_uri FROM agents WHERE id = $1`,
+      [assetId]
+    );
+    if (agentResult.rows.length === 0) {
+      logger.debug({ assetId, uri }, "Agent no longer exists, skipping URI digest");
+      return;
+    }
+    if (agentResult.rows[0].agent_uri !== uri) {
+      logger.debug({
+        assetId,
+        expectedUri: uri,
+        currentUri: agentResult.rows[0].agent_uri
+      }, "Agent URI changed while processing, skipping stale write");
+      return;
+    }
+  } catch (error: any) {
+    logger.warn({ assetId, error: error.message }, "Failed to check agent URI freshness");
+    // Continue anyway - better to write potentially stale data than lose it entirely
+  }
+
   // Purge old URI-derived metadata before storing new ones
   // Uses "_uri:" prefix to avoid collision with user's on-chain metadata
-  const db = getPool();
   try {
     await db.query(
       `DELETE FROM metadata WHERE asset = $1 AND key LIKE '\\_uri:%' ESCAPE '\\'`,

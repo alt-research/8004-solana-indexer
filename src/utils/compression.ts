@@ -16,6 +16,9 @@ const logger = createChildLogger('compression');
 // Compression settings
 const COMPRESS_THRESHOLD = 256; // bytes
 const ZSTD_LEVEL = 3; // Good balance of speed and ratio
+// Security limits - prevent decompression bombs
+const MAX_COMPRESSED_SIZE = 100 * 1024; // 100KB compressed input limit (pre-decompression check)
+const MAX_DECOMPRESSED_SIZE = 1024 * 1024; // 1MB max output (post-decompression check)
 
 // Prefix bytes
 const PREFIX_RAW = 0x00;
@@ -69,8 +72,33 @@ export async function decompressFromStorage(data: Buffer): Promise<Buffer> {
   }
 
   if (prefix === PREFIX_ZSTD) {
+    const compressedPayload = data.slice(1);
+
+    // PRE-DECOMPRESSION CHECK: Reject oversized compressed input
+    // This prevents OOM by refusing to decompress suspiciously large payloads
+    // A 100KB compressed payload could decompress to 10MB+ with high ratio
+    if (compressedPayload.length > MAX_COMPRESSED_SIZE) {
+      logger.warn({
+        compressedSize: compressedPayload.length,
+        limit: MAX_COMPRESSED_SIZE
+      }, 'Compressed payload too large - potential decompression bomb');
+      throw new Error(`Compressed size ${compressedPayload.length} exceeds limit ${MAX_COMPRESSED_SIZE}`);
+    }
+
     try {
-      const decompressed = await zstdDecompress(data.slice(1));
+      const decompressed = await zstdDecompress(compressedPayload);
+
+      // POST-DECOMPRESSION CHECK: Additional safety net for high-ratio payloads
+      if (decompressed.length > MAX_DECOMPRESSED_SIZE) {
+        logger.warn({
+          compressedSize: compressedPayload.length,
+          decompressedSize: decompressed.length,
+          ratio: (decompressed.length / compressedPayload.length).toFixed(1),
+          limit: MAX_DECOMPRESSED_SIZE
+        }, 'Decompression bomb detected - output size limit exceeded');
+        throw new Error(`Decompressed size ${decompressed.length} exceeds limit ${MAX_DECOMPRESSED_SIZE}`);
+      }
+
       return decompressed;
     } catch (error: any) {
       logger.error({ error: error.message }, 'Decompression failed');
@@ -107,3 +135,5 @@ export function compressForStorageSync(data: Buffer): Buffer {
 // Export constants for testing
 export const COMPRESSION_THRESHOLD = COMPRESS_THRESHOLD;
 export const COMPRESSION_LEVEL = ZSTD_LEVEL;
+export const MAX_COMPRESS_SIZE = MAX_COMPRESSED_SIZE;
+export const MAX_DECOMPRESS_SIZE = MAX_DECOMPRESSED_SIZE;

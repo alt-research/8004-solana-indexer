@@ -1,9 +1,11 @@
 import { PrismaClient } from "@prisma/client";
-import { config, validateConfig } from "./config.js";
+import { Connection } from "@solana/web3.js";
+import { config, validateConfig, runtimeConfig } from "./config.js";
 import { logger } from "./logger.js";
 import { Processor } from "./indexer/processor.js";
 import { startApiServer } from "./api/server.js";
 import { cleanupOrphanResponses } from "./db/handlers.js";
+import { fetchRootConfig } from "./utils/pda.js";
 
 async function main() {
   try {
@@ -22,6 +24,28 @@ async function main() {
     },
     "Starting 8004 Solana Indexer"
   );
+
+  // Fetch root config from on-chain to get base collection
+  const connection = new Connection(config.rpcUrl, "confirmed");
+  try {
+    const rootConfig = await fetchRootConfig(connection);
+    if (rootConfig) {
+      runtimeConfig.baseCollection = rootConfig.baseRegistry.toBase58();
+      runtimeConfig.authority = rootConfig.authority.toBase58();
+      runtimeConfig.initialized = true;
+      logger.info(
+        {
+          baseCollection: runtimeConfig.baseCollection,
+          authority: runtimeConfig.authority,
+        },
+        "Fetched root config from on-chain"
+      );
+    } else {
+      logger.warn("Root config not found on-chain - indexing all collections");
+    }
+  } catch (error) {
+    logger.error({ error }, "Failed to fetch root config from on-chain");
+  }
 
   // Initialize Prisma only for local mode
   let prisma: PrismaClient | null = null;

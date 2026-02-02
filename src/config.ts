@@ -5,6 +5,19 @@ export type DbMode = "local" | "supabase";
 export type MetadataIndexMode = "off" | "normal" | "full";
 export type ChainStatus = "PENDING" | "FINALIZED" | "ORPHANED";
 
+/**
+ * Runtime configuration (populated at startup from on-chain data)
+ */
+export const runtimeConfig: {
+  baseCollection: string | null;
+  authority: string | null;
+  initialized: boolean;
+} = {
+  baseCollection: null,
+  authority: null,
+  initialized: false,
+};
+
 export const config = {
   // Database mode: "local" (SQLite/Prisma) | "supabase" (PostgreSQL via Supabase)
   dbMode: (process.env.DB_MODE || "local") as DbMode,

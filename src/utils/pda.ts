@@ -3,9 +3,51 @@
  * Used by verifier for on-chain existence checks
  */
 
-import { PublicKey } from "@solana/web3.js";
+import { Connection, PublicKey } from "@solana/web3.js";
 import { createHash } from "crypto";
 import { config } from "../config.js";
+
+/**
+ * RootConfig account structure (on-chain)
+ * - discriminator: 8 bytes
+ * - authority: 32 bytes (Pubkey)
+ * - base_registry: 32 bytes (Pubkey) - The base collection
+ * - bump: 1 byte
+ */
+export interface RootConfig {
+  authority: PublicKey;
+  baseRegistry: PublicKey;
+  bump: number;
+}
+
+/**
+ * Fetch and parse RootConfig from on-chain
+ * Returns the base collection that the indexer should track
+ */
+export async function fetchRootConfig(
+  connection: Connection,
+  programId: PublicKey = AGENT_REGISTRY_PROGRAM_ID
+): Promise<RootConfig | null> {
+  const [rootConfigPda] = getRootConfigPda(programId);
+
+  const accountInfo = await connection.getAccountInfo(rootConfigPda);
+
+  if (!accountInfo) {
+    return null;
+  }
+
+  // Parse RootConfig account data
+  const data = accountInfo.data;
+  if (data.length < 73) {
+    throw new Error(`Invalid RootConfig account size: ${data.length}`);
+  }
+
+  return {
+    authority: new PublicKey(data.slice(8, 40)),
+    baseRegistry: new PublicKey(data.slice(40, 72)),
+    bump: data[72],
+  };
+}
 
 // Program IDs
 export const AGENT_REGISTRY_PROGRAM_ID = new PublicKey(config.programId);

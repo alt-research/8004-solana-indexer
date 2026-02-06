@@ -113,10 +113,9 @@ export function encodeAnchorEvent(eventName: string, data: Record<string, any>):
   const buffers: Buffer[] = [discriminator];
 
   switch (eventName) {
-    case "AgentRegisteredInRegistry":
-      // asset: Pubkey (32), registry: Pubkey (32), collection: Pubkey (32), owner: Pubkey (32), atomEnabled: bool, agentUri: String
+    case "AgentRegistered":
+      // asset: Pubkey (32), collection: Pubkey (32), owner: Pubkey (32), atomEnabled: bool, agentUri: String
       buffers.push(Buffer.from(data.asset.toBytes()));
-      buffers.push(Buffer.from(data.registry.toBytes()));
       buffers.push(Buffer.from(data.collection.toBytes()));
       buffers.push(Buffer.from(data.owner.toBytes()));
       buffers.push(Buffer.from([data.atomEnabled ? 1 : 0]));

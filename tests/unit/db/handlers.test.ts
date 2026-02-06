@@ -32,16 +32,16 @@ describe("DB Handlers", () => {
   });
 
   describe("handleEvent", () => {
-    describe("AgentRegisteredInRegistry", () => {
+    describe("AgentRegistered", () => {
       it("should upsert agent on registration", async () => {
         const event: ProgramEvent = {
-          type: "AgentRegisteredInRegistry",
+          type: "AgentRegistered",
           data: {
             asset: TEST_ASSET,
-            registry: TEST_REGISTRY,
             collection: TEST_COLLECTION,
             owner: TEST_OWNER,
             atomEnabled: true,
+            agentUri: "ipfs://QmTest",
           },
         };
 
@@ -54,7 +54,6 @@ describe("DB Handlers", () => {
               id: TEST_ASSET.toBase58(),
               owner: TEST_OWNER.toBase58(),
               collection: TEST_COLLECTION.toBase58(),
-              registry: TEST_REGISTRY.toBase58(),
               atomEnabled: true,
             }),
           })
@@ -184,14 +183,13 @@ describe("DB Handlers", () => {
       });
     });
 
-    describe("BaseRegistryCreated", () => {
-      it("should upsert base registry", async () => {
+    describe("RegistryInitialized", () => {
+      it("should upsert registry on initialization", async () => {
         const event: ProgramEvent = {
-          type: "BaseRegistryCreated",
+          type: "RegistryInitialized",
           data: {
-            registry: TEST_REGISTRY,
             collection: TEST_COLLECTION,
-            createdBy: TEST_OWNER,
+            authority: TEST_OWNER,
           },
         };
 
@@ -199,33 +197,7 @@ describe("DB Handlers", () => {
 
         expect(prisma.registry.upsert).toHaveBeenCalledWith(
           expect.objectContaining({
-            where: { id: TEST_REGISTRY.toBase58() },
             create: expect.objectContaining({
-              registryType: "Base",
-            }),
-          })
-        );
-      });
-    });
-
-    describe("UserRegistryCreated", () => {
-      it("should upsert user registry", async () => {
-        const event: ProgramEvent = {
-          type: "UserRegistryCreated",
-          data: {
-            registry: TEST_REGISTRY,
-            collection: TEST_COLLECTION,
-            owner: TEST_OWNER,
-          },
-        };
-
-        await handleEvent(prisma, event, ctx);
-
-        expect(prisma.registry.upsert).toHaveBeenCalledWith(
-          expect.objectContaining({
-            where: { id: TEST_REGISTRY.toBase58() },
-            create: expect.objectContaining({
-              registryType: "User",
               authority: TEST_OWNER.toBase58(),
             }),
           })
@@ -251,8 +223,12 @@ describe("DB Handlers", () => {
             tag2: "speed",
             endpoint: "/api/chat",
             feedbackUri: "ipfs://QmXXX",
-            feedbackHash: TEST_HASH,
+            feedbackFileHash: null,
+            sealHash: TEST_HASH,
+            slot: 123456n,
             atomEnabled: true,
+            newFeedbackDigest: TEST_HASH,
+            newFeedbackCount: 1n,
             newTrustTier: 0,
             newQualityScore: 0,
             newConfidence: 0,
@@ -293,12 +269,16 @@ describe("DB Handlers", () => {
             asset: TEST_ASSET,
             clientAddress: TEST_CLIENT,
             feedbackIndex: 0n,
+            sealHash: TEST_HASH,
+            slot: 123456n,
             originalScore: 0,
             atomEnabled: true,
             hadImpact: false,
             newTrustTier: 0,
             newQualityScore: 0,
             newConfidence: 0,
+            newRevokeDigest: TEST_HASH,
+            newRevokeCount: 1n,
           },
         };
 
@@ -331,6 +311,10 @@ describe("DB Handlers", () => {
             responder: TEST_OWNER,
             responseUri: "ipfs://QmYYY",
             responseHash: TEST_HASH,
+            sealHash: TEST_HASH,
+            slot: 123456n,
+            newResponseDigest: TEST_HASH,
+            newResponseCount: 1n,
           },
         };
 
@@ -359,6 +343,10 @@ describe("DB Handlers", () => {
             responder: TEST_OWNER,
             responseUri: "ipfs://QmYYY",
             responseHash: TEST_HASH,
+            sealHash: TEST_HASH,
+            slot: 123456n,
+            newResponseDigest: TEST_HASH,
+            newResponseCount: 1n,
           },
         };
 

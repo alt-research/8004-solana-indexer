@@ -6,24 +6,23 @@ import {
 
 describe("Parser Types", () => {
   describe("EVENT_DISCRIMINATORS", () => {
-    it("should contain all 14 event discriminators", () => {
+    it("should contain all 13 event discriminators", () => {
       const eventNames = Object.keys(EVENT_DISCRIMINATORS);
-      expect(eventNames).toHaveLength(14);
+      expect(eventNames).toHaveLength(13);
     });
 
     it("should have correct event names", () => {
       const expectedEvents = [
         "AgentOwnerSynced",
-        "AgentRegisteredInRegistry",
+        "AgentRegistered",
         "AtomEnabled",
-        "BaseRegistryCreated",
         "FeedbackRevoked",
         "MetadataDeleted",
         "MetadataSet",
         "NewFeedback",
+        "RegistryInitialized",
         "ResponseAppended",
         "UriUpdated",
-        "UserRegistryCreated",
         "ValidationRequested",
         "ValidationResponded",
         "WalletUpdated",
@@ -62,9 +61,9 @@ describe("Parser Types", () => {
   });
 
   describe("Event discriminator values", () => {
-    it("AgentRegisteredInRegistry should have correct discriminator", () => {
-      expect(EVENT_DISCRIMINATORS.AgentRegisteredInRegistry).toBe(
-        "ebf157e201dfbaaf"
+    it("AgentRegistered should have correct discriminator", () => {
+      expect(EVENT_DISCRIMINATORS.AgentRegistered).toBe(
+        "bf4ed936e864bd55"
       );
     });
 

@@ -294,6 +294,8 @@ export class WebSocketIndexer {
       // Approximate block time for WebSocket events
       const blockTime = new Date();
 
+      let allEventsProcessed = true;
+
       for (const event of events) {
         const typedEvent = toTypedEvent(event);
         if (!typedEvent) continue;
@@ -311,13 +313,13 @@ export class WebSocketIndexer {
           await handleEventAtomic(this.prisma, typedEvent, eventCtx);
         } catch (eventError) {
           eventProcessed = false;
+          allEventsProcessed = false;
           eventErrorMessage = eventError instanceof Error ? eventError.message : String(eventError);
           logger.error({
             error: eventErrorMessage,
             eventType: typedEvent.type,
             signature: logs.signature
-          }, "Error handling event");
-          // Continue with other events
+          }, "Error handling event — cursor will NOT advance past this tx");
         }
 
         // Only log to Prisma if in local mode
@@ -341,6 +343,14 @@ export class WebSocketIndexer {
             }, "Failed to log event to Prisma");
           }
         }
+      }
+
+      // Only advance cursor if ALL events in this tx were processed successfully
+      if (!allEventsProcessed) {
+        this.errorCount++;
+        logger.warn({ signature: logs.signature, slot: ctx.slot },
+          "Skipping cursor update — failed event(s) in this tx will be retried on restart");
+        return;
       }
 
       // Update state - both local and Supabase modes

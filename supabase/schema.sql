@@ -485,53 +485,6 @@ ON feedbacks(asset, client_address, block_slot, tx_signature);
 CREATE INDEX idx_feedbacks_global_order
 ON feedbacks(asset, block_slot, tx_signature);
 
--- =============================================
--- GLOBAL AGENT ID (Cosmetic/Gamification)
--- =============================================
-
--- Materialized view for global sequential IDs
-CREATE MATERIALIZED VIEW agent_global_ids AS
-SELECT
-  asset,
-  collection,
-  owner,
-  nft_name,
-  ROW_NUMBER() OVER (ORDER BY block_slot, tx_signature) AS global_id,
-  block_slot,
-  tx_signature,
-  created_at
-FROM agents
-ORDER BY block_slot, tx_signature;
-
--- Indexes for fast lookups
-CREATE UNIQUE INDEX idx_agent_global_ids_global_id ON agent_global_ids(global_id);
-CREATE UNIQUE INDEX idx_agent_global_ids_asset ON agent_global_ids(asset);
-CREATE INDEX idx_agent_global_ids_collection ON agent_global_ids(collection);
-
--- Helper function: format global_id with padding
-CREATE OR REPLACE FUNCTION format_global_id(p_global_id BIGINT)
-RETURNS TEXT AS $$
-  SELECT '#' || LPAD(p_global_id::TEXT,
-    CASE
-      WHEN p_global_id < 1000 THEN 3
-      WHEN p_global_id < 10000 THEN 4
-      WHEN p_global_id < 100000 THEN 5
-      ELSE 6
-    END, '0');
-$$ LANGUAGE SQL IMMUTABLE;
-
--- Refresh function (call after new agents)
-CREATE OR REPLACE FUNCTION refresh_agent_global_ids()
-RETURNS void AS $$
-BEGIN
-  REFRESH MATERIALIZED VIEW CONCURRENTLY agent_global_ids;
-END;
-$$ LANGUAGE plpgsql;
-
--- Grant read access to materialized view
-GRANT SELECT ON agent_global_ids TO anon;
-GRANT SELECT ON agent_global_ids TO authenticated;
-
 -- Grant read access to metadata views
 GRANT SELECT ON metadata_decoded TO anon;
 GRANT SELECT ON metadata_decoded TO authenticated;

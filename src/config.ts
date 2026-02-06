@@ -56,6 +56,7 @@ export const config = {
   supabaseUrl: process.env.SUPABASE_URL,
   supabaseKey: process.env.SUPABASE_KEY, // service_role key for writes
   supabaseDsn: process.env.SUPABASE_DSN, // PostgreSQL DSN for direct pg connection
+  supabaseSslVerify: process.env.SUPABASE_SSL_VERIFY !== "false", // default: verify SSL certs
 
   // Solana RPC (works with any provider)
   rpcUrl: process.env.RPC_URL || "https://api.devnet.solana.com",

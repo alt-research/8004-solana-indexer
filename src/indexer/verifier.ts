@@ -77,11 +77,12 @@ export class DataVerifier {
   constructor(
     private connection: Connection,
     private prisma: PrismaClient | null,
-    pool: Pool | null, // Reserved for future Supabase mode support
+    private pool: Pool | null,
     private verifyIntervalMs = config.verifyIntervalMs
-  ) {
-    // Suppress unused parameter warning for pool (future Supabase support)
-    void pool;
+  ) {}
+
+  private get isSupabaseMode(): boolean {
+    return this.prisma === null && this.pool !== null;
   }
 
   async start(): Promise<void> {
@@ -172,22 +173,28 @@ export class DataVerifier {
   // =========================================================================
 
   private async verifyAgents(cutoffSlot: bigint): Promise<void> {
-    if (!this.prisma) return;
+    let pending: Array<{ id: string }>;
 
-    const pending = await this.prisma.agent.findMany({
-      where: {
-        status: "PENDING",
-        createdSlot: { lte: cutoffSlot },
-      },
-      take: config.verifyBatchSize,
-      select: { id: true, createdSlot: true },
-    });
+    if (this.prisma) {
+      pending = await this.prisma.agent.findMany({
+        where: { status: "PENDING", createdSlot: { lte: cutoffSlot } },
+        take: config.verifyBatchSize,
+        select: { id: true },
+      });
+    } else if (this.pool) {
+      const result = await this.pool.query(
+        `SELECT asset AS id FROM agents WHERE status = 'PENDING' AND block_slot <= $1 LIMIT $2`,
+        [cutoffSlot.toString(), config.verifyBatchSize]
+      );
+      pending = result.rows;
+    } else {
+      return;
+    }
 
     if (pending.length === 0) return;
 
     logger.debug({ count: pending.length }, "Verifying agents");
 
-    // Batch verify all agents at once (100 per RPC call)
     const pubkeys = pending.map(a => a.id);
     const existsMap = await this.batchVerifyAccounts(pubkeys, "finalized");
 
@@ -200,21 +207,23 @@ export class DataVerifier {
       try {
         const exists = existsMap.get(agent.id) ?? false;
 
-        if (exists) {
+        if (this.prisma) {
           await this.prisma.agent.update({
             where: { id: agent.id },
-            data: {
-              status: "FINALIZED",
-              verifiedAt: now,
-              verifiedSlot: BigInt(currentSlot),
-            },
+            data: exists
+              ? { status: "FINALIZED", verifiedAt: now, verifiedSlot: BigInt(currentSlot) }
+              : { status: "ORPHANED", verifiedAt: now },
           });
+        } else if (this.pool) {
+          await this.pool.query(
+            `UPDATE agents SET status = $1, verified_at = $2 WHERE asset = $3`,
+            [exists ? "FINALIZED" : "ORPHANED", now.toISOString(), agent.id]
+          );
+        }
+
+        if (exists) {
           this.stats.agentsVerified++;
         } else {
-          await this.prisma.agent.update({
-            where: { id: agent.id },
-            data: { status: "ORPHANED", verifiedAt: now },
-          });
           this.stats.agentsOrphaned++;
           logger.warn({ agentId: agent.id }, "Agent orphaned - not found at finalized");
         }
@@ -225,16 +234,26 @@ export class DataVerifier {
   }
 
   private async verifyValidations(cutoffSlot: bigint): Promise<void> {
-    if (!this.prisma) return;
+    let pending: Array<{ id: string; agentId: string; validator: string; nonce: number }>;
 
-    const pending = await this.prisma.validation.findMany({
-      where: {
-        chainStatus: "PENDING",
-        requestSlot: { lte: cutoffSlot },
-      },
-      take: config.verifyBatchSize,
-      select: { id: true, agentId: true, validator: true, nonce: true },
-    });
+    if (this.prisma) {
+      pending = await this.prisma.validation.findMany({
+        where: {
+          chainStatus: "PENDING",
+          requestSlot: { lte: cutoffSlot },
+        },
+        take: config.verifyBatchSize,
+        select: { id: true, agentId: true, validator: true, nonce: true },
+      });
+    } else if (this.pool) {
+      const result = await this.pool.query(
+        `SELECT id, asset AS "agentId", validator_address AS validator, nonce FROM validations WHERE chain_status = 'PENDING' AND block_slot <= $1 LIMIT $2`,
+        [cutoffSlot.toString(), config.verifyBatchSize]
+      );
+      pending = result.rows;
+    } else {
+      return;
+    }
 
     if (pending.length === 0) return;
 
@@ -262,18 +281,23 @@ export class DataVerifier {
 
       try {
         const exists = existsMap.get(pda) ?? false;
+        const newStatus = exists ? "FINALIZED" : "ORPHANED";
+
+        if (this.prisma) {
+          await this.prisma.validation.update({
+            where: { id: v.id },
+            data: { chainStatus: newStatus, chainVerifiedAt: now },
+          });
+        } else if (this.pool) {
+          await this.pool.query(
+            `UPDATE validations SET chain_status = $1, chain_verified_at = $2 WHERE id = $3`,
+            [newStatus, now.toISOString(), v.id]
+          );
+        }
 
         if (exists) {
-          await this.prisma.validation.update({
-            where: { id: v.id },
-            data: { chainStatus: "FINALIZED", chainVerifiedAt: now },
-          });
           this.stats.validationsVerified++;
         } else {
-          await this.prisma.validation.update({
-            where: { id: v.id },
-            data: { chainStatus: "ORPHANED", chainVerifiedAt: now },
-          });
           this.stats.validationsOrphaned++;
           logger.warn({ validationId: v.id }, "Validation orphaned - PDA not found");
         }
@@ -284,16 +308,26 @@ export class DataVerifier {
   }
 
   private async verifyMetadata(cutoffSlot: bigint): Promise<void> {
-    if (!this.prisma) return;
+    let pending: Array<{ id: string; agentId: string; key: string }>;
 
-    const pending = await this.prisma.agentMetadata.findMany({
-      where: {
-        status: "PENDING",
-        slot: { lte: cutoffSlot },
-      },
-      take: config.verifyBatchSize,
-      select: { id: true, agentId: true, key: true },
-    });
+    if (this.prisma) {
+      pending = await this.prisma.agentMetadata.findMany({
+        where: {
+          status: "PENDING",
+          slot: { lte: cutoffSlot },
+        },
+        take: config.verifyBatchSize,
+        select: { id: true, agentId: true, key: true },
+      });
+    } else if (this.pool) {
+      const result = await this.pool.query(
+        `SELECT id, asset AS "agentId", key FROM metadata WHERE status = 'PENDING' AND block_slot <= $1 LIMIT $2`,
+        [cutoffSlot.toString(), config.verifyBatchSize]
+      );
+      pending = result.rows;
+    } else {
+      return;
+    }
 
     if (pending.length === 0) return;
 
@@ -326,10 +360,17 @@ export class DataVerifier {
     for (const m of uriMetadata) {
       if (!this.isRunning) break;
       try {
-        await this.prisma.agentMetadata.update({
-          where: { id: m.id },
-          data: { status: "FINALIZED", verifiedAt: now },
-        });
+        if (this.prisma) {
+          await this.prisma.agentMetadata.update({
+            where: { id: m.id },
+            data: { status: "FINALIZED", verifiedAt: now },
+          });
+        } else if (this.pool) {
+          await this.pool.query(
+            `UPDATE metadata SET status = 'FINALIZED', verified_at = $1 WHERE id = $2`,
+            [now.toISOString(), m.id]
+          );
+        }
         this.stats.metadataVerified++;
       } catch (error: any) {
         logger.error({ metadataId: m.id, error: error.message }, "URI metadata finalization failed");
@@ -346,18 +387,23 @@ export class DataVerifier {
 
         try {
           const exists = existsMap.get(pda) ?? false;
+          const newStatus = exists ? "FINALIZED" : "ORPHANED";
+
+          if (this.prisma) {
+            await this.prisma.agentMetadata.update({
+              where: { id: m.id },
+              data: { status: newStatus, verifiedAt: now },
+            });
+          } else if (this.pool) {
+            await this.pool.query(
+              `UPDATE metadata SET status = $1, verified_at = $2 WHERE id = $3`,
+              [newStatus, now.toISOString(), m.id]
+            );
+          }
 
           if (exists) {
-            await this.prisma.agentMetadata.update({
-              where: { id: m.id },
-              data: { status: "FINALIZED", verifiedAt: now },
-            });
             this.stats.metadataVerified++;
           } else {
-            await this.prisma.agentMetadata.update({
-              where: { id: m.id },
-              data: { status: "ORPHANED", verifiedAt: now },
-            });
             this.stats.metadataOrphaned++;
             logger.warn({ metadataId: m.id, key: m.key }, "Metadata orphaned - PDA not found");
           }
@@ -369,16 +415,27 @@ export class DataVerifier {
   }
 
   private async verifyRegistries(cutoffSlot: bigint): Promise<void> {
-    if (!this.prisma) return;
+    let pending: Array<{ id: string; collection: string }>;
 
-    const pending = await this.prisma.registry.findMany({
-      where: {
-        status: "PENDING",
-        slot: { lte: cutoffSlot },
-      },
-      take: config.verifyBatchSize,
-      select: { id: true, collection: true },
-    });
+    if (this.prisma) {
+      pending = await this.prisma.registry.findMany({
+        where: {
+          status: "PENDING",
+          slot: { lte: cutoffSlot },
+        },
+        take: config.verifyBatchSize,
+        select: { id: true, collection: true },
+      });
+    } else if (this.pool) {
+      // collections table has no block_slot column; verify all PENDING
+      const result = await this.pool.query(
+        `SELECT collection AS id, collection FROM collections WHERE status = 'PENDING' LIMIT $1`,
+        [config.verifyBatchSize]
+      );
+      pending = result.rows;
+    } else {
+      return;
+    }
 
     if (pending.length === 0) return;
 
@@ -405,18 +462,23 @@ export class DataVerifier {
 
       try {
         const exists = existsMap.get(pda) ?? false;
+        const newStatus = exists ? "FINALIZED" : "ORPHANED";
+
+        if (this.prisma) {
+          await this.prisma.registry.update({
+            where: { id: r.id },
+            data: { status: newStatus, verifiedAt: now },
+          });
+        } else if (this.pool) {
+          await this.pool.query(
+            `UPDATE collections SET status = $1, verified_at = $2 WHERE collection = $3`,
+            [newStatus, now.toISOString(), r.collection]
+          );
+        }
 
         if (exists) {
-          await this.prisma.registry.update({
-            where: { id: r.id },
-            data: { status: "FINALIZED", verifiedAt: now },
-          });
           this.stats.registriesVerified++;
         } else {
-          await this.prisma.registry.update({
-            where: { id: r.id },
-            data: { status: "ORPHANED", verifiedAt: now },
-          });
           this.stats.registriesOrphaned++;
           logger.warn({ registryId: r.id }, "Registry orphaned - PDA not found");
         }
@@ -440,16 +502,26 @@ export class DataVerifier {
    * can be added later for paranoid mode.
    */
   private async verifyFeedbacks(cutoffSlot: bigint): Promise<void> {
-    if (!this.prisma) return;
+    let pending: Array<{ id: string; agentId: string }>;
 
-    const pending = await this.prisma.feedback.findMany({
-      where: {
-        status: "PENDING",
-        createdSlot: { lte: cutoffSlot },
-      },
-      take: config.verifyBatchSize,
-      select: { id: true, agentId: true, createdSlot: true },
-    });
+    if (this.prisma) {
+      pending = await this.prisma.feedback.findMany({
+        where: {
+          status: "PENDING",
+          createdSlot: { lte: cutoffSlot },
+        },
+        take: config.verifyBatchSize,
+        select: { id: true, agentId: true },
+      });
+    } else if (this.pool) {
+      const result = await this.pool.query(
+        `SELECT id, asset AS "agentId" FROM feedbacks WHERE status = 'PENDING' AND block_slot <= $1 LIMIT $2`,
+        [cutoffSlot.toString(), config.verifyBatchSize]
+      );
+      pending = result.rows;
+    } else {
+      return;
+    }
 
     if (pending.length === 0) return;
 
@@ -465,18 +537,23 @@ export class DataVerifier {
 
       try {
         const agentExists = existsMap.get(f.agentId) ?? false;
+        const newStatus = agentExists ? "FINALIZED" : "ORPHANED";
+
+        if (this.prisma) {
+          await this.prisma.feedback.update({
+            where: { id: f.id },
+            data: { status: newStatus, verifiedAt: now },
+          });
+        } else if (this.pool) {
+          await this.pool.query(
+            `UPDATE feedbacks SET status = $1, verified_at = $2 WHERE id = $3`,
+            [newStatus, now.toISOString(), f.id]
+          );
+        }
 
         if (agentExists) {
-          await this.prisma.feedback.update({
-            where: { id: f.id },
-            data: { status: "FINALIZED", verifiedAt: now },
-          });
           this.stats.feedbacksVerified++;
         } else {
-          await this.prisma.feedback.update({
-            where: { id: f.id },
-            data: { status: "ORPHANED", verifiedAt: now },
-          });
           this.stats.feedbacksOrphaned++;
           logger.warn({ feedbackId: f.id }, "Feedback orphaned - agent not found");
         }
@@ -487,9 +564,15 @@ export class DataVerifier {
   }
 
   private async verifyFeedbackResponses(cutoffSlot: bigint): Promise<void> {
-    if (!this.prisma) return;
+    if (this.prisma) {
+      await this.verifyFeedbackResponsesPrisma(cutoffSlot);
+    } else if (this.pool) {
+      await this.verifyFeedbackResponsesSupabase(cutoffSlot);
+    }
+  }
 
-    const pending = await this.prisma.feedbackResponse.findMany({
+  private async verifyFeedbackResponsesPrisma(cutoffSlot: bigint): Promise<void> {
+    const pending = await this.prisma!.feedbackResponse.findMany({
       where: {
         status: "PENDING",
         slot: { lte: cutoffSlot },
@@ -502,7 +585,6 @@ export class DataVerifier {
 
     logger.debug({ count: pending.length }, "Verifying feedback responses");
 
-    // Separate orphaned (auto-orphan) from those needing agent check
     const orphanedResponses: typeof pending = [];
     const needsAgentCheck: typeof pending = [];
 
@@ -516,11 +598,10 @@ export class DataVerifier {
 
     const now = new Date();
 
-    // Auto-orphan responses with orphaned parent feedback
     for (const r of orphanedResponses) {
       if (!this.isRunning) break;
       try {
-        await this.prisma.feedbackResponse.update({
+        await this.prisma!.feedbackResponse.update({
           where: { id: r.id },
           data: { status: "ORPHANED", verifiedAt: now },
         });
@@ -530,7 +611,6 @@ export class DataVerifier {
       }
     }
 
-    // Batch verify agent existence for remaining responses
     if (needsAgentCheck.length > 0) {
       const agentIds = [...new Set(needsAgentCheck.map(r => r.feedback.agentId))];
       const existsMap = await this.batchVerifyAccounts(agentIds, "finalized");
@@ -540,18 +620,86 @@ export class DataVerifier {
 
         try {
           const agentExists = existsMap.get(r.feedback.agentId) ?? false;
+          const newStatus = agentExists ? "FINALIZED" : "ORPHANED";
+
+          await this.prisma!.feedbackResponse.update({
+            where: { id: r.id },
+            data: { status: newStatus, verifiedAt: now },
+          });
 
           if (agentExists) {
-            await this.prisma.feedbackResponse.update({
-              where: { id: r.id },
-              data: { status: "FINALIZED", verifiedAt: now },
-            });
             this.stats.feedbacksVerified++;
           } else {
-            await this.prisma.feedbackResponse.update({
-              where: { id: r.id },
-              data: { status: "ORPHANED", verifiedAt: now },
-            });
+            this.stats.feedbacksOrphaned++;
+          }
+        } catch (error: any) {
+          logger.error({ responseId: r.id, error: error.message }, "Response verification failed");
+        }
+      }
+    }
+  }
+
+  private async verifyFeedbackResponsesSupabase(cutoffSlot: bigint): Promise<void> {
+    // Supabase feedback_responses has asset directly, join with feedbacks for orphan detection
+    const result = await this.pool!.query(
+      `SELECT fr.id, fr.asset AS "agentId", f.status AS "feedbackStatus"
+       FROM feedback_responses fr
+       LEFT JOIN feedbacks f ON f.asset = fr.asset AND f.client_address = fr.client_address AND f.feedback_index = fr.feedback_index
+       WHERE fr.status = 'PENDING' AND fr.block_slot <= $1
+       LIMIT $2`,
+      [cutoffSlot.toString(), config.verifyBatchSize]
+    );
+
+    const pending = result.rows as Array<{ id: string; agentId: string; feedbackStatus: string | null }>;
+    if (pending.length === 0) return;
+
+    logger.debug({ count: pending.length }, "Verifying feedback responses (Supabase)");
+
+    const orphanedResponses: typeof pending = [];
+    const needsAgentCheck: typeof pending = [];
+
+    for (const r of pending) {
+      if (r.feedbackStatus === "ORPHANED") {
+        orphanedResponses.push(r);
+      } else {
+        needsAgentCheck.push(r);
+      }
+    }
+
+    const now = new Date();
+
+    for (const r of orphanedResponses) {
+      if (!this.isRunning) break;
+      try {
+        await this.pool!.query(
+          `UPDATE feedback_responses SET status = 'ORPHANED', verified_at = $1 WHERE id = $2`,
+          [now.toISOString(), r.id]
+        );
+        this.stats.feedbacksOrphaned++;
+      } catch (error: any) {
+        logger.error({ responseId: r.id, error: error.message }, "Response orphan update failed");
+      }
+    }
+
+    if (needsAgentCheck.length > 0) {
+      const agentIds = [...new Set(needsAgentCheck.map(r => r.agentId))];
+      const existsMap = await this.batchVerifyAccounts(agentIds, "finalized");
+
+      for (const r of needsAgentCheck) {
+        if (!this.isRunning) break;
+
+        try {
+          const agentExists = existsMap.get(r.agentId) ?? false;
+          const newStatus = agentExists ? "FINALIZED" : "ORPHANED";
+
+          await this.pool!.query(
+            `UPDATE feedback_responses SET status = $1, verified_at = $2 WHERE id = $3`,
+            [newStatus, now.toISOString(), r.id]
+          );
+
+          if (agentExists) {
+            this.stats.feedbacksVerified++;
+          } else {
             this.stats.feedbacksOrphaned++;
           }
         } catch (error: any) {

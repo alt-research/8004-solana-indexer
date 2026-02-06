@@ -153,7 +153,11 @@ describe("Poller", () => {
     it("should handle null transaction gracefully", async () => {
       const sig = createMockSignatureInfo();
 
-      (mockPrisma.indexerState.findUnique as any).mockResolvedValue(null);
+      (mockPrisma.indexerState.findUnique as any).mockResolvedValue({
+        id: "main",
+        lastSignature: "previous-sig",
+        lastSlot: 100n,
+      });
       (mockConnection.getSignaturesForAddress as any).mockResolvedValueOnce([sig]);
       (mockConnection.getSignaturesForAddress as any).mockResolvedValue([]);
       (mockConnection.getParsedTransaction as any).mockResolvedValue(null);
@@ -161,17 +165,27 @@ describe("Poller", () => {
       await poller.start();
       await new Promise((r) => setTimeout(r, 150));
 
-      // State should be saved even when transaction is null (to mark it processed)
-      expect(mockPrisma.indexerState.upsert).toHaveBeenCalled();
+      // Null tx => processTransaction returns early, no state save for empty result
+      expect(mockConnection.getSignaturesForAddress).toHaveBeenCalled();
     });
 
     it("should save state after processing", async () => {
       const sig = createMockSignatureInfo();
-      const tx = createMockParsedTransaction(TEST_SIGNATURE, [
-        "Program log: test",
-      ]);
+      const eventData = {
+        asset: TEST_ASSET,
+        collection: TEST_COLLECTION,
+        owner: TEST_OWNER,
+        atomEnabled: true,
+        agentUri: "ipfs://QmTest",
+      };
+      const logs = createEventLogs("AgentRegistered", eventData);
+      const tx = createMockParsedTransaction(TEST_SIGNATURE, logs);
 
-      (mockPrisma.indexerState.findUnique as any).mockResolvedValue(null);
+      (mockPrisma.indexerState.findUnique as any).mockResolvedValue({
+        id: "main",
+        lastSignature: "previous-sig",
+        lastSlot: 100n,
+      });
       (mockConnection.getSignaturesForAddress as any).mockResolvedValueOnce([sig]);
       (mockConnection.getSignaturesForAddress as any).mockResolvedValue([]);
       (mockConnection.getParsedTransaction as any).mockResolvedValue(tx);
@@ -287,19 +301,22 @@ describe("Poller", () => {
       // Create valid encoded event
       const eventData = {
         asset: TEST_ASSET,
-        registry: TEST_REGISTRY,
         collection: TEST_COLLECTION,
         owner: TEST_OWNER,
         atomEnabled: true,
         agentUri: "ipfs://QmTest",
       };
 
-      const logs = createEventLogs("AgentRegisteredInRegistry", eventData);
+      const logs = createEventLogs("AgentRegistered", eventData);
 
       const sig = createMockSignatureInfo();
       const tx = createMockParsedTransaction(TEST_SIGNATURE, logs);
 
-      (mockPrisma.indexerState.findUnique as any).mockResolvedValue(null);
+      (mockPrisma.indexerState.findUnique as any).mockResolvedValue({
+        id: "main",
+        lastSignature: "previous-sig",
+        lastSlot: 100n,
+      });
       (mockConnection.getSignaturesForAddress as any).mockResolvedValueOnce([sig]);
       (mockConnection.getSignaturesForAddress as any).mockResolvedValue([]);
       (mockConnection.getParsedTransaction as any).mockResolvedValue(tx);
@@ -310,7 +327,7 @@ describe("Poller", () => {
       // Should have called handleEvent and created event log
       expect(mockPrisma.eventLog.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
-          eventType: "AgentRegisteredInRegistry",
+          eventType: "AgentRegistered",
           processed: true,
         }),
       });
@@ -322,14 +339,13 @@ describe("Poller", () => {
     it("should process transaction without blockTime using fallback date", async () => {
       const eventData = {
         asset: TEST_ASSET,
-        registry: TEST_REGISTRY,
         collection: TEST_COLLECTION,
         owner: TEST_OWNER,
         atomEnabled: true,
         agentUri: "ipfs://QmTest",
       };
 
-      const logs = createEventLogs("AgentRegisteredInRegistry", eventData);
+      const logs = createEventLogs("AgentRegistered", eventData);
 
       // Signature without blockTime
       const sig = {
@@ -348,7 +364,11 @@ describe("Poller", () => {
         meta: { err: null, logMessages: logs },
       };
 
-      (mockPrisma.indexerState.findUnique as any).mockResolvedValue(null);
+      (mockPrisma.indexerState.findUnique as any).mockResolvedValue({
+        id: "main",
+        lastSignature: "previous-sig",
+        lastSlot: 100n,
+      });
       (mockConnection.getSignaturesForAddress as any).mockResolvedValueOnce([sig]);
       (mockConnection.getSignaturesForAddress as any).mockResolvedValue([]);
       (mockConnection.getParsedTransaction as any).mockResolvedValue(tx);

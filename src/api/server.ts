@@ -10,6 +10,7 @@ import { Server } from 'http';
 import { PrismaClient, Prisma } from '@prisma/client';
 import { logger } from '../logger.js';
 import { decompressFromStorage } from '../utils/compression.js';
+import cors from 'cors';
 
 // Security constants
 const MAX_LIMIT = 1000; // Maximum items per page
@@ -181,7 +182,25 @@ export function createApiServer(options: ApiServerOptions): Express {
   // Required for rate limiting to work behind reverse proxies (nginx, cloudflare, etc.)
   app.set('trust proxy', 1);
 
-  app.use(express.json());
+  app.use(express.json({ limit: '100kb' }));
+
+  // CORS - allow configurable origins
+  const allowedOrigins = process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) || ['*'];
+  app.use(cors({
+    origin: allowedOrigins.includes('*') ? '*' : allowedOrigins,
+    methods: ['GET', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    maxAge: 86400,
+  }));
+
+  // Security headers
+  app.use((_req: Request, res: Response, next: Function) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '0');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    next();
+  });
 
   // Rate limiting - protect against DoS attacks
   const limiter = rateLimit({

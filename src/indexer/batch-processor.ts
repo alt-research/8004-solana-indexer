@@ -10,8 +10,12 @@
 import { Connection, ParsedTransactionWithMeta } from "@solana/web3.js";
 import { Pool, PoolClient } from "pg";
 import { PrismaClient } from "@prisma/client";
+import { createHash } from "crypto";
 import { createChildLogger } from "../logger.js";
 import { config } from "../config.js";
+import { metadataQueue } from "./metadata-queue.js";
+import { compressForStorage } from "../utils/compression.js";
+import { stripNullBytes } from "../utils/sanitize.js";
 
 const logger = createChildLogger("batch-processor");
 
@@ -20,6 +24,13 @@ const BATCH_SIZE_RPC = 100;        // Max transactions per RPC call
 const BATCH_SIZE_DB = 500;         // Max events per DB transaction
 const FLUSH_INTERVAL_MS = 500;     // Flush every 500ms even if batch not full
 const MAX_PARALLEL_RPC = 3;        // Parallel RPC batch requests
+const MAX_DEAD_LETTER = 10000;     // Max events in dead letter queue (memory protection)
+
+// Helper to check for all-zero hash (empty hash should be NULL, not "00...00")
+function isAllZeroHash(hash: Uint8Array | undefined | null): boolean {
+  if (!hash) return true;
+  return hash.every(b => b === 0);
+}
 
 // EventData type for batch event data - uses Record for type safety while allowing runtime values
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -248,7 +259,19 @@ export class EventBuffer {
           eventCount: eventsToFlush.length,
           retryCount: this.retryCount
         }, "Max retries exceeded, moving events to dead letter queue");
-        this.deadLetterQueue.push(...eventsToFlush);
+
+        // Memory protection: cap dead letter queue size
+        const spaceAvailable = MAX_DEAD_LETTER - this.deadLetterQueue.length;
+        if (spaceAvailable <= 0) {
+          logger.error({ dropped: eventsToFlush.length }, "Dead letter queue full, dropping events");
+        } else if (eventsToFlush.length > spaceAvailable) {
+          const toKeep = eventsToFlush.slice(0, spaceAvailable);
+          const dropped = eventsToFlush.length - toKeep.length;
+          this.deadLetterQueue.push(...toKeep);
+          logger.error({ dropped, kept: toKeep.length }, "Dead letter queue nearly full, some events dropped");
+        } else {
+          this.deadLetterQueue.push(...eventsToFlush);
+        }
         this.stats.deadLettered += eventsToFlush.length;
         this.retryCount = 0;
         // Don't re-throw - continue processing new events
@@ -280,9 +303,13 @@ export class EventBuffer {
 
   /**
    * Flush events to Supabase in a single transaction
+   * Collects URIs for async metadata extraction after commit
    */
   private async flushToSupabase(events: BatchEvent[], lastCtx: BatchEvent["ctx"] | null): Promise<void> {
     if (!this.pool) return;
+
+    // Collect URIs for post-commit metadata extraction
+    const uriTasks: Array<{ assetId: string; uri: string }> = [];
 
     const client = await this.pool.connect();
     try {
@@ -290,6 +317,15 @@ export class EventBuffer {
 
       for (const event of events) {
         await this.insertEventSupabase(client, event);
+
+        // Collect URIs from agent registration and URI update events
+        if (event.type === "AgentRegistered" && event.data.agentUri) {
+          const asset = event.data.asset?.toBase58?.() || event.data.asset;
+          uriTasks.push({ assetId: asset, uri: event.data.agentUri });
+        } else if (event.type === "UriUpdated" && event.data.newUri) {
+          const asset = event.data.asset?.toBase58?.() || event.data.asset;
+          uriTasks.push({ assetId: asset, uri: event.data.newUri });
+        }
       }
 
       // Update cursor with last event context
@@ -307,6 +343,11 @@ export class EventBuffer {
       }
 
       await client.query("COMMIT");
+
+      // After successful commit, queue URI metadata extraction (fire-and-forget)
+      if (uriTasks.length > 0 && config.metadataIndexMode !== "off") {
+        metadataQueue.addBatch(uriTasks);
+      }
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -322,7 +363,7 @@ export class EventBuffer {
     const { type, data, ctx } = event;
 
     switch (type) {
-      case "AgentRegisteredInRegistry":
+      case "AgentRegistered":
         await this.insertAgentSupabase(client, data, ctx);
         break;
       case "NewFeedback":
@@ -340,9 +381,8 @@ export class EventBuffer {
       case "ValidationResponded":
         await this.updateValidationResponseSupabase(client, data, ctx);
         break;
-      case "BaseRegistryCreated":
-      case "UserRegistryCreated":
-        await this.insertCollectionSupabase(client, data, ctx, type);
+      case "RegistryInitialized":
+        await this.insertCollectionSupabase(client, data, ctx);
         break;
       case "UriUpdated":
         await this.updateAgentUriSupabase(client, data, ctx);
@@ -377,9 +417,10 @@ export class EventBuffer {
         atom_enabled = EXCLUDED.atom_enabled,
         block_slot = EXCLUDED.block_slot,
         tx_index = EXCLUDED.tx_index,
-        updated_at = NOW()
+        updated_at = $10
     `, [asset, owner, data.agentUri || null, collection, data.atomEnabled || false,
-        ctx.slot.toString(), ctx.txIndex || null, ctx.signature, ctx.blockTime.toISOString()]);
+        ctx.slot.toString(), ctx.txIndex || null, ctx.signature, ctx.blockTime.toISOString(),
+        ctx.blockTime.toISOString()]);
   }
 
   private async insertFeedbackSupabase(client: PoolClient, data: EventData, ctx: BatchEvent["ctx"]): Promise<void> {
@@ -388,17 +429,23 @@ export class EventBuffer {
     const feedbackIndex = BigInt(data.feedbackIndex?.toString() || "0");
     const id = `${asset}:${client_addr}:${feedbackIndex}`;
 
+    // Convert all-zero hash to NULL (consistent with supabase.ts)
+    const feedbackHash = !isAllZeroHash(data.sealHash)
+      ? Buffer.from(data.sealHash).toString("hex")
+      : null;
+
     await client.query(`
       INSERT INTO feedbacks (id, asset, client_address, feedback_index, value, value_decimals, score, tag1, tag2, endpoint, feedback_uri, feedback_hash, block_slot, tx_index, tx_signature, created_at, status)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'PENDING')
       ON CONFLICT (id) DO UPDATE SET
         score = COALESCE(EXCLUDED.score, feedbacks.score),
-        updated_at = NOW()
+        updated_at = $17
     `, [id, asset, client_addr, feedbackIndex.toString(),
         data.value?.toString() || "0", data.valueDecimals || 0, data.score,
         data.tag1 || "", data.tag2 || "", data.endpoint || "",
-        data.feedbackUri || "", data.sealHash ? Buffer.from(data.sealHash).toString("hex") : null,
-        ctx.slot.toString(), ctx.txIndex || null, ctx.signature, ctx.blockTime.toISOString()]);
+        data.feedbackUri || "", feedbackHash,
+        ctx.slot.toString(), ctx.txIndex || null, ctx.signature, ctx.blockTime.toISOString(),
+        ctx.blockTime.toISOString()]);
   }
 
   private async insertRevocationSupabase(client: PoolClient, data: EventData, ctx: BatchEvent["ctx"]): Promise<void> {
@@ -419,12 +466,17 @@ export class EventBuffer {
     const feedbackIndex = BigInt(data.feedbackIndex?.toString() || "0");
     const id = `${asset}:${client_addr}:${feedbackIndex}:${responder}:${ctx.signature}`;
 
+    // Convert all-zero hash to NULL (consistent with supabase.ts)
+    const responseHash = !isAllZeroHash(data.responseHash)
+      ? Buffer.from(data.responseHash).toString("hex")
+      : null;
+
     await client.query(`
       INSERT INTO feedback_responses (id, asset, client_address, feedback_index, responder, response_uri, response_hash, block_slot, tx_index, tx_signature, created_at, status)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'PENDING')
       ON CONFLICT (id) DO NOTHING
     `, [id, asset, client_addr, feedbackIndex.toString(), responder,
-        data.responseUri || "", data.responseHash ? Buffer.from(data.responseHash).toString("hex") : null,
+        data.responseUri || "", responseHash,
         ctx.slot.toString(), ctx.txIndex || null, ctx.signature, ctx.blockTime.toISOString()]);
   }
 
@@ -444,70 +496,91 @@ export class EventBuffer {
         ctx.slot.toString(), ctx.txIndex || null, ctx.signature, ctx.blockTime.toISOString()]);
   }
 
-  private async updateValidationResponseSupabase(client: PoolClient, data: EventData, _ctx: BatchEvent["ctx"]): Promise<void> {
+  private async updateValidationResponseSupabase(client: PoolClient, data: EventData, ctx: BatchEvent["ctx"]): Promise<void> {
     const asset = data.asset?.toBase58?.() || data.asset;
     const validator = data.validatorAddress?.toBase58?.() || data.validatorAddress;
     const nonce = BigInt(data.nonce?.toString() || "0");
+    const id = `${asset}:${validator}:${nonce}`;
 
+    // Use UPSERT to handle case where request wasn't indexed (DB reset, late start, etc.)
     await client.query(`
-      UPDATE validations SET
-        response = $1, response_uri = $2, response_hash = $3, tag = $4, updated_at = NOW()
-      WHERE asset = $5 AND validator_address = $6 AND nonce = $7
-    `, [data.response || 0, data.responseUri || "",
+      INSERT INTO validations (id, asset, validator_address, nonce, response, response_uri, response_hash, tag, status, block_slot, tx_index, tx_signature, created_at, updated_at, chain_status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13, 'PENDING')
+      ON CONFLICT (id) DO UPDATE SET
+        response = EXCLUDED.response,
+        response_uri = EXCLUDED.response_uri,
+        response_hash = EXCLUDED.response_hash,
+        tag = EXCLUDED.tag,
+        status = EXCLUDED.status,
+        updated_at = EXCLUDED.updated_at
+    `, [id, asset, validator, nonce.toString(), data.response || 0, data.responseUri || "",
         data.responseHash ? Buffer.from(data.responseHash).toString("hex") : null,
-        data.tag || "", asset, validator, nonce.toString()]);
+        data.tag || "", "RESPONDED",
+        ctx.slot.toString(), ctx.txIndex || null, ctx.signature, ctx.blockTime.toISOString()]);
   }
 
-  private async insertCollectionSupabase(client: PoolClient, data: EventData, ctx: BatchEvent["ctx"], type: string): Promise<void> {
+  // v0.6.0: RegistryInitialized replaces BaseRegistryCreated/UserRegistryCreated
+  private async insertCollectionSupabase(client: PoolClient, data: EventData, ctx: BatchEvent["ctx"]): Promise<void> {
     const collection = data.collection?.toBase58?.() || data.collection;
-    const authority = type === "BaseRegistryCreated"
-      ? (data.createdBy?.toBase58?.() || data.createdBy)
-      : (data.owner?.toBase58?.() || data.owner);
-    const registryType = type === "BaseRegistryCreated" ? "BASE" : "USER";
+    const authority = data.authority?.toBase58?.() || data.authority;
 
     await client.query(`
       INSERT INTO collections (collection, registry_type, authority, created_at, status)
       VALUES ($1, $2, $3, $4, 'PENDING')
       ON CONFLICT (collection) DO NOTHING
-    `, [collection, registryType, authority, ctx.blockTime.toISOString()]);
+    `, [collection, "BASE", authority, ctx.blockTime.toISOString()]);
   }
 
-  private async updateAgentUriSupabase(client: PoolClient, data: EventData, _ctx: BatchEvent["ctx"]): Promise<void> {
+  private async updateAgentUriSupabase(client: PoolClient, data: EventData, ctx: BatchEvent["ctx"]): Promise<void> {
     const asset = data.asset?.toBase58?.() || data.asset;
     await client.query(`
-      UPDATE agents SET agent_uri = $1, updated_at = NOW() WHERE asset = $2
-    `, [data.newUri || "", asset]);
+      UPDATE agents SET agent_uri = $1, updated_at = $2 WHERE asset = $3
+    `, [data.newUri || "", ctx.blockTime.toISOString(), asset]);
   }
 
-  private async updateAgentWalletSupabase(client: PoolClient, data: EventData, _ctx: BatchEvent["ctx"]): Promise<void> {
+  private async updateAgentWalletSupabase(client: PoolClient, data: EventData, ctx: BatchEvent["ctx"]): Promise<void> {
     const asset = data.asset?.toBase58?.() || data.asset;
     const wallet = data.newWallet?.toBase58?.() || data.newWallet;
     await client.query(`
-      UPDATE agents SET agent_wallet = $1, updated_at = NOW() WHERE asset = $2
-    `, [wallet, asset]);
+      UPDATE agents SET agent_wallet = $1, updated_at = $2 WHERE asset = $3
+    `, [wallet, ctx.blockTime.toISOString(), asset]);
   }
 
-  private async updateAtomEnabledSupabase(client: PoolClient, data: EventData, _ctx: BatchEvent["ctx"]): Promise<void> {
+  private async updateAtomEnabledSupabase(client: PoolClient, data: EventData, ctx: BatchEvent["ctx"]): Promise<void> {
     const asset = data.asset?.toBase58?.() || data.asset;
     await client.query(`
-      UPDATE agents SET atom_enabled = true, updated_at = NOW() WHERE asset = $1
-    `, [asset]);
+      UPDATE agents SET atom_enabled = true, updated_at = $1 WHERE asset = $2
+    `, [ctx.blockTime.toISOString(), asset]);
   }
 
   private async insertMetadataSupabase(client: PoolClient, data: EventData, ctx: BatchEvent["ctx"]): Promise<void> {
     const asset = data.asset?.toBase58?.() || data.asset;
     const key = data.key || "";
-    const value = data.value ? Buffer.from(data.value).toString("utf8") : "";
-    const id = `${asset}:${key}`;
+
+    // Prevent collision with system-derived URI metadata (reserved namespace)
+    if (key.startsWith("_uri:")) {
+      logger.debug({ asset, key }, "Skipping reserved _uri: metadata key");
+      return;
+    }
+
+    // Strip null bytes and compress (consistent with supabase.ts)
+    const rawValue = data.value ? stripNullBytes(data.value) : Buffer.alloc(0);
+    const compressedValue = await compressForStorage(rawValue);
+
+    // Calculate key_hash from key (sha256(key)[0..16])
+    const keyHash = createHash("sha256").update(key).digest().slice(0, 16).toString("hex");
+    const id = `${asset}:${keyHash}`;
 
     await client.query(`
-      INSERT INTO metadata (id, asset, key, value, immutable, block_slot, tx_index, tx_signature, created_at, status)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'PENDING')
+      INSERT INTO metadata (id, asset, key, key_hash, value, immutable, block_slot, tx_index, tx_signature, created_at, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'PENDING')
       ON CONFLICT (id) DO UPDATE SET
         value = EXCLUDED.value,
         block_slot = EXCLUDED.block_slot,
-        updated_at = NOW()
-    `, [id, asset, key, value, data.immutable || false, ctx.slot.toString(), ctx.txIndex || null, ctx.signature, ctx.blockTime.toISOString()]);
+        updated_at = $11
+    `, [id, asset, key, keyHash, compressedValue, data.immutable || false,
+        ctx.slot.toString(), ctx.txIndex || null, ctx.signature, ctx.blockTime.toISOString(),
+        ctx.blockTime.toISOString()]);
   }
 
   /**

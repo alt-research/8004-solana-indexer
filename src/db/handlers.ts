@@ -2,15 +2,14 @@ import { PrismaClient } from "@prisma/client";
 import PQueue from "p-queue";
 import {
   ProgramEvent,
-  AgentRegisteredInRegistry,
+  AgentRegistered,
   AtomEnabled,
   AgentOwnerSynced,
   UriUpdated,
   WalletUpdated,
   MetadataSet,
   MetadataDeleted,
-  BaseRegistryCreated,
-  UserRegistryCreated,
+  RegistryInitialized,
   NewFeedback,
   FeedbackRevoked,
   ResponseAppended,
@@ -127,8 +126,8 @@ async function updateCursorAtomic(
     select: { lastSlot: true },
   });
 
-  // Monotonic check: only advance if newer slot
-  if (current && current.lastSlot !== null && ctx.slot <= current.lastSlot) {
+  // Monotonic check: reject backward slot movement, allow same-slot advancement
+  if (current && current.lastSlot !== null && ctx.slot < current.lastSlot) {
     return; // Already processed a later slot
   }
 
@@ -159,7 +158,7 @@ async function triggerUriDigestIfNeeded(
   let assetId: string | null = null;
   let uri: string | null = null;
 
-  if (event.type === "AgentRegisteredInRegistry") {
+  if (event.type === "AgentRegistered") {
     assetId = event.data.asset.toBase58();
     uri = event.data.agentUri || null;
   } else if (event.type === "UriUpdated") {
@@ -195,7 +194,7 @@ async function handleEventInner(
   ctx: EventContext
 ): Promise<void> {
   switch (event.type) {
-    case "AgentRegisteredInRegistry":
+    case "AgentRegistered":
       await handleAgentRegisteredCore(tx, event.data, ctx);
       break;
     case "AgentOwnerSynced":
@@ -216,11 +215,8 @@ async function handleEventInner(
     case "MetadataDeleted":
       await handleMetadataDeletedTx(tx, event.data, ctx);
       break;
-    case "BaseRegistryCreated":
-      await handleBaseRegistryCreatedTx(tx, event.data, ctx);
-      break;
-    case "UserRegistryCreated":
-      await handleUserRegistryCreatedTx(tx, event.data, ctx);
+    case "RegistryInitialized":
+      await handleRegistryInitializedTx(tx, event.data, ctx);
       break;
     case "NewFeedback":
       await handleNewFeedbackTx(tx, event.data, ctx);
@@ -243,8 +239,9 @@ async function handleEventInner(
 }
 
 /**
- * Dual-mode event handler
- * Routes to Supabase or Prisma (SQLite) based on DB_MODE config
+ * @deprecated Use handleEventAtomic instead. This non-atomic handler does not
+ * wrap event processing + cursor update in a single transaction, which means
+ * a crash between the two operations can leave the indexer in an inconsistent state.
  */
 export async function handleEvent(
   prisma: PrismaClient | null,
@@ -262,7 +259,7 @@ export async function handleEvent(
   }
 
   switch (event.type) {
-    case "AgentRegisteredInRegistry":
+    case "AgentRegistered":
       await handleAgentRegistered(prisma, event.data, ctx);
       break;
 
@@ -290,12 +287,8 @@ export async function handleEvent(
       await handleMetadataDeleted(prisma, event.data, ctx);
       break;
 
-    case "BaseRegistryCreated":
-      await handleBaseRegistryCreated(prisma, event.data, ctx);
-      break;
-
-    case "UserRegistryCreated":
-      await handleUserRegistryCreated(prisma, event.data, ctx);
+    case "RegistryInitialized":
+      await handleRegistryInitialized(prisma, event.data, ctx);
       break;
 
     case "NewFeedback":
@@ -324,13 +317,15 @@ export async function handleEvent(
 }
 
 // Core handler that works with both PrismaClient and transaction client
+// v0.6.0: AgentRegistered event no longer has registry field (single-collection)
 async function handleAgentRegisteredCore(
   client: PrismaClientOrTx,
-  data: AgentRegisteredInRegistry,
+  data: AgentRegistered,
   ctx: EventContext
 ): Promise<void> {
   const assetId = data.asset.toBase58();
   const agentUri = data.agentUri || "";
+  const collectionId = data.collection.toBase58();
 
   await client.agent.upsert({
     where: { id: assetId },
@@ -339,16 +334,16 @@ async function handleAgentRegisteredCore(
       owner: data.owner.toBase58(),
       uri: agentUri,
       nftName: "",
-      collection: data.collection.toBase58(),
-      registry: data.registry.toBase58(),
+      collection: collectionId,
+      registry: collectionId, // v0.6.0: registry = collection (single-collection arch)
       atomEnabled: data.atomEnabled,
       createdTxSignature: ctx.signature,
       createdSlot: ctx.slot,
       status: DEFAULT_STATUS,
     },
     update: {
-      collection: data.collection.toBase58(),
-      registry: data.registry.toBase58(),
+      collection: collectionId,
+      registry: collectionId, // v0.6.0: registry = collection
       atomEnabled: data.atomEnabled,
       uri: agentUri,
     },
@@ -360,7 +355,7 @@ async function handleAgentRegisteredCore(
 // Non-atomic wrapper with URI digest side effect
 async function handleAgentRegistered(
   prisma: PrismaClient,
-  data: AgentRegisteredInRegistry,
+  data: AgentRegistered,
   ctx: EventContext
 ): Promise<void> {
   await handleAgentRegisteredCore(prisma, data, ctx);
@@ -703,39 +698,42 @@ async function handleMetadataDeleted(
   logger.info({ assetId, key: data.key }, "Metadata deleted");
 }
 
-async function handleBaseRegistryCreatedTx(
+// v0.6.0: RegistryInitialized replaces BaseRegistryCreated/UserRegistryCreated
+async function handleRegistryInitializedTx(
   tx: PrismaTransactionClient,
-  data: BaseRegistryCreated,
+  data: RegistryInitialized,
   ctx: EventContext
 ): Promise<void> {
+  const collectionId = data.collection.toBase58();
   await tx.registry.upsert({
-    where: { id: data.registry.toBase58() },
+    where: { id: collectionId },
     create: {
-      id: data.registry.toBase58(),
-      collection: data.collection.toBase58(),
-      registryType: "Base",
-      authority: data.createdBy.toBase58(),
+      id: collectionId,
+      collection: collectionId,
+      registryType: "Base", // v0.6.0: single-collection, always base
+      authority: data.authority.toBase58(),
       txSignature: ctx.signature,
       slot: ctx.slot,
       status: DEFAULT_STATUS,
     },
     update: {},
   });
-  logger.info({ registryId: data.registry.toBase58() }, "Base registry created");
+  logger.info({ collection: collectionId }, "Registry initialized");
 }
 
-async function handleBaseRegistryCreated(
+async function handleRegistryInitialized(
   prisma: PrismaClient,
-  data: BaseRegistryCreated,
+  data: RegistryInitialized,
   ctx: EventContext
 ): Promise<void> {
+  const collectionId = data.collection.toBase58();
   await prisma.registry.upsert({
-    where: { id: data.registry.toBase58() },
+    where: { id: collectionId },
     create: {
-      id: data.registry.toBase58(),
-      collection: data.collection.toBase58(),
-      registryType: "Base",
-      authority: data.createdBy.toBase58(),
+      id: collectionId,
+      collection: collectionId,
+      registryType: "Base", // v0.6.0: single-collection, always base
+      authority: data.authority.toBase58(),
       txSignature: ctx.signature,
       slot: ctx.slot,
       status: DEFAULT_STATUS,
@@ -743,56 +741,7 @@ async function handleBaseRegistryCreated(
     update: {},
   });
 
-  logger.info(
-    { registryId: data.registry.toBase58() },
-    "Base registry created"
-  );
-}
-
-async function handleUserRegistryCreatedTx(
-  tx: PrismaTransactionClient,
-  data: UserRegistryCreated,
-  ctx: EventContext
-): Promise<void> {
-  await tx.registry.upsert({
-    where: { id: data.registry.toBase58() },
-    create: {
-      id: data.registry.toBase58(),
-      collection: data.collection.toBase58(),
-      registryType: "User",
-      authority: data.owner.toBase58(),
-      txSignature: ctx.signature,
-      slot: ctx.slot,
-      status: DEFAULT_STATUS,
-    },
-    update: {},
-  });
-  logger.info({ registryId: data.registry.toBase58(), owner: data.owner.toBase58() }, "User registry created");
-}
-
-async function handleUserRegistryCreated(
-  prisma: PrismaClient,
-  data: UserRegistryCreated,
-  ctx: EventContext
-): Promise<void> {
-  await prisma.registry.upsert({
-    where: { id: data.registry.toBase58() },
-    create: {
-      id: data.registry.toBase58(),
-      collection: data.collection.toBase58(),
-      registryType: "User",
-      authority: data.owner.toBase58(),
-      txSignature: ctx.signature,
-      slot: ctx.slot,
-      status: DEFAULT_STATUS,
-    },
-    update: {},
-  });
-
-  logger.info(
-    { registryId: data.registry.toBase58(), owner: data.owner.toBase58() },
-    "User registry created"
-  );
+  logger.info({ collection: collectionId }, "Registry initialized");
 }
 
 async function handleNewFeedbackTx(

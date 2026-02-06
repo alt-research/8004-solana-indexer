@@ -212,14 +212,13 @@ describe("WebSocketIndexer", () => {
       // Create valid encoded event
       const eventData = {
         asset: TEST_ASSET,
-        registry: TEST_REGISTRY,
         collection: TEST_COLLECTION,
         owner: TEST_OWNER,
         atomEnabled: true,
         agentUri: "ipfs://QmTest",
       };
 
-      const logs = createEventLogs("AgentRegisteredInRegistry", eventData);
+      const logs = createEventLogs("AgentRegistered", eventData);
 
       // Trigger with valid logs (goes through queue)
       logsHandler!(
@@ -233,7 +232,7 @@ describe("WebSocketIndexer", () => {
       // Should have processed the event
       expect(mockPrisma.eventLog.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
-          eventType: "AgentRegisteredInRegistry",
+          eventType: "AgentRegistered",
           processed: true,
         }),
       });
@@ -259,14 +258,13 @@ describe("WebSocketIndexer", () => {
       // Create valid encoded event
       const eventData = {
         asset: TEST_ASSET,
-        registry: TEST_REGISTRY,
         collection: TEST_COLLECTION,
         owner: TEST_OWNER,
         atomEnabled: true,
         agentUri: "ipfs://QmTest",
       };
 
-      const logs = createEventLogs("AgentRegisteredInRegistry", eventData);
+      const logs = createEventLogs("AgentRegistered", eventData);
 
       // Make agent.upsert throw to trigger error handling
       (mockPrisma.agent.upsert as any).mockRejectedValue(new Error("DB error"));
@@ -304,14 +302,13 @@ describe("WebSocketIndexer", () => {
       // Create valid encoded event
       const eventData = {
         asset: TEST_ASSET,
-        registry: TEST_REGISTRY,
         collection: TEST_COLLECTION,
         owner: TEST_OWNER,
         atomEnabled: true,
         agentUri: "ipfs://QmTest",
       };
 
-      const logs = createEventLogs("AgentRegisteredInRegistry", eventData);
+      const logs = createEventLogs("AgentRegistered", eventData);
 
       // Make agent.upsert throw a non-Error
       (mockPrisma.agent.upsert as any).mockRejectedValue("String error");
@@ -361,7 +358,7 @@ describe("WebSocketIndexer", () => {
         updatedBy: TEST_OWNER,
       };
 
-      const encoded1 = encodeAnchorEvent("AgentRegisteredInRegistry", eventData1);
+      const encoded1 = encodeAnchorEvent("AgentRegistered", eventData1);
       const encoded2 = encodeAnchorEvent("UriUpdated", eventData2);
       const base64Data1 = encoded1.toString("base64");
       const base64Data2 = encoded2.toString("base64");

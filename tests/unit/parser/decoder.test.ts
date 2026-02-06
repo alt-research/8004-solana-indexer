@@ -36,7 +36,7 @@ describe("Parser Decoder", () => {
     it("should have events defined in IDL", () => {
       expect(idl.events).toBeDefined();
       expect(Array.isArray(idl.events)).toBe(true);
-      expect(idl.events!.length).toBe(14);
+      expect(idl.events!.length).toBe(11);
     });
   });
 
@@ -63,22 +63,21 @@ describe("Parser Decoder", () => {
     });
 
     it("should parse valid Anchor event from logs", () => {
-      // Create a properly encoded AgentRegisteredInRegistry event
+      // Create a properly encoded AgentRegistered event
       const eventData = {
         asset: TEST_ASSET,
-        registry: TEST_REGISTRY,
         collection: TEST_COLLECTION,
         owner: TEST_OWNER,
         atomEnabled: true,
         agentUri: "ipfs://QmTest",
       };
 
-      const logs = createEventLogs("AgentRegisteredInRegistry", eventData);
+      const logs = createEventLogs("AgentRegistered", eventData);
 
       const result = parseTransactionLogs(logs);
 
       expect(result.length).toBe(1);
-      expect(result[0].name).toBe("AgentRegisteredInRegistry");
+      expect(result[0].name).toBe("AgentRegistered");
       expect(result[0].data.asset.toString()).toBe(TEST_ASSET.toBase58());
     });
 
@@ -99,7 +98,7 @@ describe("Parser Decoder", () => {
         updatedBy: TEST_OWNER,
       };
 
-      const encoded1 = encodeAnchorEvent("AgentRegisteredInRegistry", eventData1);
+      const encoded1 = encodeAnchorEvent("AgentRegistered", eventData1);
       const encoded2 = encodeAnchorEvent("UriUpdated", eventData2);
       const base64Data1 = encoded1.toString("base64");
       const base64Data2 = encoded2.toString("base64");
@@ -116,7 +115,7 @@ describe("Parser Decoder", () => {
       // Anchor parser may parse events differently based on discriminator matching
       // At minimum, we expect at least 1 event to be parsed
       expect(result.length).toBeGreaterThanOrEqual(1);
-      expect(result[0].name).toBe("AgentRegisteredInRegistry");
+      expect(result[0].name).toBe("AgentRegistered");
     });
 
     it("should handle parser exceptions gracefully", () => {
@@ -166,14 +165,13 @@ describe("Parser Decoder", () => {
       // Create a valid encoded event
       const eventData = {
         asset: TEST_ASSET,
-        registry: TEST_REGISTRY,
         collection: TEST_COLLECTION,
         owner: TEST_OWNER,
         atomEnabled: true,
         agentUri: "ipfs://QmTest",
       };
 
-      const logs = createEventLogs("AgentRegisteredInRegistry", eventData);
+      const logs = createEventLogs("AgentRegistered", eventData);
 
       const tx = createMockParsedTransaction(TEST_SIGNATURE, logs);
       const result = parseTransaction(tx as any);
@@ -182,20 +180,19 @@ describe("Parser Decoder", () => {
       expect(result!.signature).toBe(TEST_SIGNATURE);
       expect(result!.slot).toBe(Number(TEST_SLOT));
       expect(result!.events.length).toBe(1);
-      expect(result!.events[0].name).toBe("AgentRegisteredInRegistry");
+      expect(result!.events[0].name).toBe("AgentRegistered");
     });
 
     it("should handle transaction with null blockTime", () => {
       const eventData = {
         asset: TEST_ASSET,
-        registry: TEST_REGISTRY,
         collection: TEST_COLLECTION,
         owner: TEST_OWNER,
         atomEnabled: true,
         agentUri: "ipfs://QmTest",
       };
 
-      const logs = createEventLogs("AgentRegisteredInRegistry", eventData);
+      const logs = createEventLogs("AgentRegistered", eventData);
 
       const tx = {
         slot: Number(TEST_SLOT),
@@ -217,12 +214,11 @@ describe("Parser Decoder", () => {
   });
 
   describe("toTypedEvent", () => {
-    it("should convert AgentRegisteredInRegistry event", () => {
+    it("should convert AgentRegistered event", () => {
       const event = {
-        name: "AgentRegisteredInRegistry",
+        name: "AgentRegistered",
         data: {
           asset: TEST_ASSET.toBase58(),
-          registry: TEST_REGISTRY.toBase58(),
           collection: TEST_COLLECTION.toBase58(),
           owner: TEST_OWNER.toBase58(),
           atom_enabled: true,
@@ -233,9 +229,8 @@ describe("Parser Decoder", () => {
       const result = toTypedEvent(event);
 
       expect(result).not.toBeNull();
-      expect(result!.type).toBe("AgentRegisteredInRegistry");
+      expect(result!.type).toBe("AgentRegistered");
       expect(result!.data.asset.toBase58()).toBe(TEST_ASSET.toBase58());
-      expect(result!.data.registry.toBase58()).toBe(TEST_REGISTRY.toBase58());
       expect(result!.data.collection.toBase58()).toBe(TEST_COLLECTION.toBase58());
       expect(result!.data.owner.toBase58()).toBe(TEST_OWNER.toBase58());
     });
@@ -351,36 +346,19 @@ describe("Parser Decoder", () => {
       expect(result!.data.key).toBe("description");
     });
 
-    it("should convert BaseRegistryCreated event", () => {
+    it("should convert RegistryInitialized event", () => {
       const event = {
-        name: "BaseRegistryCreated",
+        name: "RegistryInitialized",
         data: {
-          registry: TEST_REGISTRY.toBase58(),
           collection: TEST_COLLECTION.toBase58(),
-          created_by: TEST_OWNER.toBase58(),
+          authority: TEST_OWNER.toBase58(),
         },
       };
 
       const result = toTypedEvent(event);
 
       expect(result).not.toBeNull();
-      expect(result!.type).toBe("BaseRegistryCreated");
-    });
-
-    it("should convert UserRegistryCreated event", () => {
-      const event = {
-        name: "UserRegistryCreated",
-        data: {
-          registry: TEST_REGISTRY.toBase58(),
-          collection: TEST_COLLECTION.toBase58(),
-          owner: TEST_OWNER.toBase58(),
-        },
-      };
-
-      const result = toTypedEvent(event);
-
-      expect(result).not.toBeNull();
-      expect(result!.type).toBe("UserRegistryCreated");
+      expect(result!.type).toBe("RegistryInitialized");
     });
 
     it("should convert NewFeedback event", () => {
@@ -459,7 +437,7 @@ describe("Parser Decoder", () => {
           slot: "123456",
           responder: TEST_OWNER.toBase58(),
           response_hash: Array.from(TEST_HASH),
-          feedback_hash: Array.from(TEST_HASH),
+          seal_hash: Array.from(TEST_HASH),
           new_response_digest: Array.from(TEST_HASH),
           new_response_count: "1",
           response_uri: "ipfs://QmYYY",
@@ -471,7 +449,7 @@ describe("Parser Decoder", () => {
       expect(result).not.toBeNull();
       expect(result!.type).toBe("ResponseAppended");
       expect(result!.data.responseUri).toBe("ipfs://QmYYY");
-      expect(result!.data.feedbackHash).toEqual(new Uint8Array(TEST_HASH));
+      expect(result!.data.sealHash).toEqual(new Uint8Array(TEST_HASH));
     });
 
     it("should convert ValidationRequested event", () => {
@@ -529,9 +507,8 @@ describe("Parser Decoder", () => {
 
     it("should return null for invalid event data", () => {
       const event = {
-        name: "AgentRegisteredInRegistry",
+        name: "AgentRegistered",
         data: {
-          // Missing required fields
           asset: "invalid-not-a-pubkey",
         },
       };

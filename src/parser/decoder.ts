@@ -132,18 +132,18 @@ export function toTypedEvent(event: ParsedEvent): ProgramEvent | null {
 
   try {
     switch (name) {
-      case "AgentRegisteredInRegistry":
+      // v0.6.0: AgentRegistered (was AgentRegisteredInRegistry, no registry field)
+      case "AgentRegistered":
         return {
-          type: "AgentRegisteredInRegistry",
+          type: "AgentRegistered",
           data: {
             asset: new PublicKey(data.asset as string),
-            registry: new PublicKey(data.registry as string),
             collection: new PublicKey(data.collection as string),
             owner: new PublicKey(data.owner as string),
             atomEnabled: data.atom_enabled === undefined
               ? true
-              : (data.atom_enabled as boolean), // snake_case from IDL
-            agentUri: (data.agent_uri as string) || "", // snake_case from IDL
+              : (data.atom_enabled as boolean),
+            agentUri: (data.agent_uri as string) || "",
           },
         };
 
@@ -209,23 +209,13 @@ export function toTypedEvent(event: ParsedEvent): ProgramEvent | null {
           },
         };
 
-      case "BaseRegistryCreated":
+      // v0.6.0: RegistryInitialized (replaces BaseRegistryCreated/UserRegistryCreated)
+      case "RegistryInitialized":
         return {
-          type: "BaseRegistryCreated",
+          type: "RegistryInitialized",
           data: {
-            registry: new PublicKey(data.registry as string),
             collection: new PublicKey(data.collection as string),
-            createdBy: new PublicKey(data.created_by as string), // snake_case from IDL
-          },
-        };
-
-      case "UserRegistryCreated":
-        return {
-          type: "UserRegistryCreated",
-          data: {
-            registry: new PublicKey(data.registry as string),
-            collection: new PublicKey(data.collection as string),
-            owner: new PublicKey(data.owner as string),
+            authority: new PublicKey(data.authority as string),
           },
         };
 

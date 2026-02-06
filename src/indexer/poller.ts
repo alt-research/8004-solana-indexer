@@ -11,6 +11,7 @@ import { handleEventAtomic, EventContext } from "../db/handlers.js";
 import { loadIndexerState, saveIndexerState, getPool } from "../db/supabase.js";
 import { createChildLogger } from "../logger.js";
 import { BatchRpcFetcher, EventBuffer } from "./batch-processor.js";
+import { metadataQueue } from "./metadata-queue.js";
 
 const logger = createChildLogger("poller");
 
@@ -66,7 +67,10 @@ export class Poller {
     if (USE_BATCH_DB) {
       const pool = getPool();
       this.eventBuffer = new EventBuffer(pool, this.prisma);
+      // Initialize metadata queue with same pool
+      metadataQueue.setPool(pool);
       logger.info("Batch DB writes enabled (PostgreSQL)");
+      logger.info({ metadataMode: config.metadataIndexMode }, "Metadata extraction queue initialized");
     }
   }
 

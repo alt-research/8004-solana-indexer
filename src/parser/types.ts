@@ -1,14 +1,16 @@
 import { PublicKey } from "@solana/web3.js";
 
-// Event types matching the IDL
-export interface AgentRegisteredInRegistry {
+// Event types matching the IDL (v0.6.0 single-collection)
+export interface AgentRegistered {
   asset: PublicKey;
-  registry: PublicKey;
   collection: PublicKey;
   owner: PublicKey;
   atomEnabled: boolean;
   agentUri: string;
 }
+
+// Legacy alias for backwards compatibility
+export type AgentRegisteredInRegistry = AgentRegistered;
 
 export interface AtomEnabled {
   asset: PublicKey;
@@ -46,16 +48,10 @@ export interface MetadataDeleted {
   key: string;
 }
 
-export interface BaseRegistryCreated {
-  registry: PublicKey;
+// v0.6.0: Single registry event (replaces BaseRegistryCreated/UserRegistryCreated)
+export interface RegistryInitialized {
   collection: PublicKey;
-  createdBy: PublicKey;
-}
-
-export interface UserRegistryCreated {
-  registry: PublicKey;
-  collection: PublicKey;
-  owner: PublicKey;
+  authority: PublicKey;
 }
 
 export interface NewFeedback {
@@ -135,17 +131,16 @@ export interface ValidationResponded {
   tag: string;
 }
 
-// Union type for all events
+// Union type for all events (v0.6.0)
 export type ProgramEvent =
-  | { type: "AgentRegisteredInRegistry"; data: AgentRegisteredInRegistry }
+  | { type: "AgentRegistered"; data: AgentRegistered }
   | { type: "AtomEnabled"; data: AtomEnabled }
   | { type: "AgentOwnerSynced"; data: AgentOwnerSynced }
   | { type: "UriUpdated"; data: UriUpdated }
   | { type: "WalletUpdated"; data: WalletUpdated }
   | { type: "MetadataSet"; data: MetadataSet }
   | { type: "MetadataDeleted"; data: MetadataDeleted }
-  | { type: "BaseRegistryCreated"; data: BaseRegistryCreated }
-  | { type: "UserRegistryCreated"; data: UserRegistryCreated }
+  | { type: "RegistryInitialized"; data: RegistryInitialized }
   | { type: "NewFeedback"; data: NewFeedback }
   | { type: "FeedbackRevoked"; data: FeedbackRevoked }
   | { type: "ResponseAppended"; data: ResponseAppended }
@@ -153,18 +148,18 @@ export type ProgramEvent =
   | { type: "ValidationResponded"; data: ValidationResponded };
 
 // Event discriminators from IDL (first 8 bytes of SHA256 of event name)
+// v0.6.0: Updated for single-collection architecture
 export const EVENT_DISCRIMINATORS: Record<string, string> = {
   AgentOwnerSynced: "65e4b8fc14b946f9",
-  AgentRegisteredInRegistry: "ebf157e201dfbaaf",
+  AgentRegistered: "bf4ed936e864bd55",
   AtomEnabled: "f6b3aedf616e4ac8",
-  BaseRegistryCreated: "879ce7e4244c002b",
   FeedbackRevoked: "cd101f5e36651007",
   MetadataDeleted: "fbf4993f23fc8336",
   MetadataSet: "be7d47770e1f1ac5",
   NewFeedback: "0ea23ac2832a0b95",
+  RegistryInitialized: "908a3e693a2664b1",
   ResponseAppended: "a8a9d6c1ab01e87b",
   UriUpdated: "aac74ea731546602",
-  UserRegistryCreated: "f58b689be5829872",
   ValidationRequested: "852afcc65287b741",
   ValidationResponded: "5d3ff665d4d035a7",
   WalletUpdated: "d7220a3b1872c981",

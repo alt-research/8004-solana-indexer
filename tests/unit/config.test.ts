@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+// Prevent dotenv from re-loading .env on each dynamic import
+vi.mock("dotenv/config", () => ({}));
+
 // Store original env
 const originalEnv = process.env;
 
@@ -15,22 +18,26 @@ describe("Config", () => {
 
   describe("config values", () => {
     it("should use default values when env vars not set", async () => {
+      // Note: dotenv loads .env before tests, so we clear ALL relevant vars
       delete process.env.DATABASE_URL;
+      delete process.env.DB_MODE;
       delete process.env.RPC_URL;
       delete process.env.WS_URL;
-      delete process.env.PROGRAM_ID;
       delete process.env.INDEXER_MODE;
       delete process.env.POLLING_INTERVAL;
       delete process.env.BATCH_SIZE;
       delete process.env.WS_RECONNECT_INTERVAL;
       delete process.env.WS_MAX_RETRIES;
       delete process.env.LOG_LEVEL;
+      delete process.env.INDEX_METADATA;
+      delete process.env.PROGRAM_ID;
 
       const { config } = await import("../../src/config.js");
 
       expect(config.databaseUrl).toBe("file:./data/indexer.db");
       expect(config.rpcUrl).toBe("https://api.devnet.solana.com");
       expect(config.wsUrl).toBe("wss://api.devnet.solana.com");
+      // programId comes from SDK (PROGRAM_ID.toBase58()), not env var
       expect(config.programId).toBe("8oo4SbcgjRBAXjmGU4YMcdFqfeLLrtn7n6f358PkAc3N");
       expect(config.indexerMode).toBe("auto");
       expect(config.pollingInterval).toBe(5000);
@@ -44,7 +51,6 @@ describe("Config", () => {
       process.env.DATABASE_URL = "postgresql://custom:custom@localhost/custom";
       process.env.RPC_URL = "https://custom.rpc.com";
       process.env.WS_URL = "wss://custom.ws.com";
-      process.env.PROGRAM_ID = "CustomProgramId123";
       process.env.INDEXER_MODE = "polling";
       process.env.POLLING_INTERVAL = "10000";
       process.env.BATCH_SIZE = "200";
@@ -57,7 +63,8 @@ describe("Config", () => {
       expect(config.databaseUrl).toBe("postgresql://custom:custom@localhost/custom");
       expect(config.rpcUrl).toBe("https://custom.rpc.com");
       expect(config.wsUrl).toBe("wss://custom.ws.com");
-      expect(config.programId).toBe("CustomProgramId123");
+      // programId always comes from SDK, not configurable via env
+      expect(config.programId).toBe("8oo4SbcgjRBAXjmGU4YMcdFqfeLLrtn7n6f358PkAc3N");
       expect(config.indexerMode).toBe("polling");
       expect(config.pollingInterval).toBe(10000);
       expect(config.batchSize).toBe(200);
@@ -90,14 +97,10 @@ describe("Config", () => {
     it("should throw when INDEXER_MODE is invalid", async () => {
       process.env.DATABASE_URL = "file:./data/test.db";
       process.env.RPC_URL = "https://api.devnet.solana.com";
-      process.env.PROGRAM_ID = "TestProgramId";
       process.env.INDEXER_MODE = "invalid";
 
-      const { validateConfig } = await import("../../src/config.js");
-
-      expect(() => validateConfig()).toThrow(
-        "INDEXER_MODE must be 'auto', 'polling', or 'websocket'"
-      );
+      // INDEXER_MODE is validated at config parse time (import throws)
+      await expect(import("../../src/config.js")).rejects.toThrow(/Invalid INDEXER_MODE/);
     });
   });
 });

@@ -7,15 +7,14 @@ import { Pool } from "pg";
 import { createHash } from "crypto";
 import {
   ProgramEvent,
-  AgentRegisteredInRegistry,
+  AgentRegistered,
   AtomEnabled,
   AgentOwnerSynced,
   UriUpdated,
   WalletUpdated,
   MetadataSet,
   MetadataDeleted,
-  BaseRegistryCreated,
-  UserRegistryCreated,
+  RegistryInitialized,
   NewFeedback,
   FeedbackRevoked,
   ResponseAppended,
@@ -105,10 +104,13 @@ export function getPool(): Pool {
     if (!config.supabaseDsn) {
       throw new Error("SUPABASE_DSN required for supabase mode");
     }
-    logger.info({ maxConnections: 10 }, "Creating PostgreSQL connection pool");
+    logger.info({ maxConnections: 10, sslVerify: config.supabaseSslVerify }, "Creating PostgreSQL connection pool");
+    if (!config.supabaseSslVerify) {
+      logger.warn("SSL certificate verification disabled - not recommended for production");
+    }
     pool = new Pool({
       connectionString: config.supabaseDsn,
-      ssl: { rejectUnauthorized: false },
+      ssl: { rejectUnauthorized: config.supabaseSslVerify },
       max: 10,
       connectionTimeoutMillis: 10000, // 10s timeout
       idleTimeoutMillis: 30000,
@@ -120,10 +122,17 @@ export function getPool(): Pool {
     pool.on('connect', () => {
       logger.debug("New database connection established");
     });
+    // Initialize metadata queue with same pool
+    metadataQueue.setPool(pool);
+    logger.info({ metadataMode: config.metadataIndexMode }, "Metadata extraction queue initialized");
   }
   return pool;
 }
 
+/**
+ * @deprecated Use handleEventAtomic instead. This non-atomic handler does not
+ * wrap event processing + cursor update in a single transaction.
+ */
 export async function handleEvent(
   event: ProgramEvent,
   ctx: EventContext
@@ -132,7 +141,7 @@ export async function handleEvent(
 
   try {
     switch (event.type) {
-      case "AgentRegisteredInRegistry":
+      case "AgentRegistered":
         await handleAgentRegistered(event.data, ctx);
         eventStats.agentRegistered++;
         break;
@@ -162,12 +171,8 @@ export async function handleEvent(
         await handleMetadataDeleted(event.data, ctx);
         break;
 
-      case "BaseRegistryCreated":
-        await handleBaseRegistryCreated(event.data, ctx);
-        break;
-
-      case "UserRegistryCreated":
-        await handleUserRegistryCreated(event.data, ctx);
+      case "RegistryInitialized":
+        await handleRegistryInitialized(event.data, ctx);
         break;
 
       case "NewFeedback":
@@ -267,7 +272,7 @@ async function updateCursorAtomic(
        last_slot = EXCLUDED.last_slot,
        source = EXCLUDED.source,
        updated_at = NOW()
-     WHERE indexer_state.last_slot IS NULL OR indexer_state.last_slot < EXCLUDED.last_slot`,
+     WHERE indexer_state.last_slot IS NULL OR indexer_state.last_slot <= EXCLUDED.last_slot`,
     [ctx.signature, ctx.slot.toString(), ctx.source || "poller"]
   );
 }
@@ -281,7 +286,7 @@ async function handleEventInTx(
   ctx: EventContext
 ): Promise<void> {
   switch (event.type) {
-    case "AgentRegisteredInRegistry":
+    case "AgentRegistered":
       await handleAgentRegisteredTx(client, event.data, ctx);
       eventStats.agentRegistered++;
       break;
@@ -304,11 +309,8 @@ async function handleEventInTx(
     case "MetadataDeleted":
       await handleMetadataDeletedTx(client, event.data, ctx);
       break;
-    case "BaseRegistryCreated":
-      await handleBaseRegistryCreatedTx(client, event.data, ctx);
-      break;
-    case "UserRegistryCreated":
-      await handleUserRegistryCreatedTx(client, event.data, ctx);
+    case "RegistryInitialized":
+      await handleRegistryInitializedTx(client, event.data, ctx);
       break;
     case "NewFeedback":
       await handleNewFeedbackTx(client, event.data, ctx);
@@ -375,7 +377,7 @@ async function ensureCollectionTx(client: PoolClient, collection: string): Promi
 
 async function handleAgentRegisteredTx(
   client: PoolClient,
-  data: AgentRegisteredInRegistry,
+  data: AgentRegistered,
   ctx: EventContext
 ): Promise<void> {
   const assetId = data.asset.toBase58();
@@ -395,6 +397,11 @@ async function handleAgentRegisteredTx(
     [assetId, data.owner.toBase58(), agentUri, collection, data.atomEnabled, ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString(), DEFAULT_STATUS]
   );
   logger.info({ assetId, owner: data.owner.toBase58(), uri: agentUri }, "Agent registered");
+
+  // Queue URI metadata extraction (fire-and-forget, runs after transaction commits)
+  if (agentUri && config.metadataIndexMode !== "off") {
+    metadataQueue.add(assetId, agentUri);
+  }
 }
 
 async function handleAgentOwnerSyncedTx(
@@ -435,6 +442,11 @@ async function handleUriUpdatedTx(
     [newUri, ctx.slot.toString(), ctx.blockTime.toISOString(), assetId]
   );
   logger.info({ assetId, newUri }, "Agent URI updated");
+
+  // Queue URI metadata extraction (fire-and-forget, runs after transaction commits)
+  if (newUri && config.metadataIndexMode !== "off") {
+    metadataQueue.add(assetId, newUri);
+  }
 }
 
 async function handleWalletUpdatedTx(
@@ -489,9 +501,10 @@ async function handleMetadataDeletedTx(
   logger.info({ assetId, key: data.key }, "Metadata deleted");
 }
 
-async function handleBaseRegistryCreatedTx(
+// v0.6.0: RegistryInitialized replaces BaseRegistryCreated/UserRegistryCreated
+async function handleRegistryInitializedTx(
   client: PoolClient,
-  data: BaseRegistryCreated,
+  data: RegistryInitialized,
   ctx: EventContext
 ): Promise<void> {
   const collection = data.collection.toBase58();
@@ -501,26 +514,9 @@ async function handleBaseRegistryCreatedTx(
      ON CONFLICT (collection) DO UPDATE SET
        registry_type = EXCLUDED.registry_type,
        authority = EXCLUDED.authority`,
-    [collection, "BASE", data.createdBy.toBase58(), ctx.blockTime.toISOString(), DEFAULT_STATUS]
+    [collection, "BASE", data.authority.toBase58(), ctx.blockTime.toISOString(), DEFAULT_STATUS]
   );
-  logger.info({ registryId: data.registry.toBase58() }, "Base registry created");
-}
-
-async function handleUserRegistryCreatedTx(
-  client: PoolClient,
-  data: UserRegistryCreated,
-  ctx: EventContext
-): Promise<void> {
-  const collection = data.collection.toBase58();
-  await client.query(
-    `INSERT INTO collections (collection, registry_type, authority, created_at, status)
-     VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (collection) DO UPDATE SET
-       registry_type = EXCLUDED.registry_type,
-       authority = EXCLUDED.authority`,
-    [collection, "USER", data.owner.toBase58(), ctx.blockTime.toISOString(), DEFAULT_STATUS]
-  );
-  logger.info({ registryId: data.registry.toBase58(), owner: data.owner.toBase58() }, "User registry created");
+  logger.info({ collection }, "Registry initialized");
 }
 
 async function handleNewFeedbackTx(
@@ -727,7 +723,7 @@ async function handleValidationRespondedTx(
 }
 
 async function handleAgentRegistered(
-  data: AgentRegisteredInRegistry,
+  data: AgentRegistered,
   ctx: EventContext
 ): Promise<void> {
   const db = getPool();
@@ -901,8 +897,9 @@ async function handleMetadataDeleted(
   }
 }
 
-async function handleBaseRegistryCreated(
-  data: BaseRegistryCreated,
+// v0.6.0: RegistryInitialized replaces BaseRegistryCreated/UserRegistryCreated
+async function handleRegistryInitialized(
+  data: RegistryInitialized,
   ctx: EventContext
 ): Promise<void> {
   const db = getPool();
@@ -915,33 +912,11 @@ async function handleBaseRegistryCreated(
        ON CONFLICT (collection) DO UPDATE SET
          registry_type = EXCLUDED.registry_type,
          authority = EXCLUDED.authority`,
-      [collection, "BASE", data.createdBy.toBase58(), ctx.blockTime.toISOString()]
+      [collection, "BASE", data.authority.toBase58(), ctx.blockTime.toISOString()]
     );
-    logger.info({ registryId: data.registry.toBase58() }, "Base registry created");
+    logger.info({ collection }, "Registry initialized");
   } catch (error: any) {
-    logger.error({ error: error.message, collection }, "Failed to create base registry");
-  }
-}
-
-async function handleUserRegistryCreated(
-  data: UserRegistryCreated,
-  ctx: EventContext
-): Promise<void> {
-  const db = getPool();
-  const collection = data.collection.toBase58();
-
-  try {
-    await db.query(
-      `INSERT INTO collections (collection, registry_type, authority, created_at)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (collection) DO UPDATE SET
-         registry_type = EXCLUDED.registry_type,
-         authority = EXCLUDED.authority`,
-      [collection, "USER", data.owner.toBase58(), ctx.blockTime.toISOString()]
-    );
-    logger.info({ registryId: data.registry.toBase58(), owner: data.owner.toBase58() }, "User registry created");
-  } catch (error: any) {
-    logger.error({ error: error.message, collection }, "Failed to create user registry");
+    logger.error({ error: error.message, collection }, "Failed to initialize registry");
   }
 }
 
@@ -1262,6 +1237,7 @@ export async function saveIndexerState(signature: string, slot: bigint): Promise
 import { digestUri, serializeValue } from "../indexer/uriDigest.js";
 import { compressForStorage } from "../utils/compression.js";
 import { stripNullBytes } from "../utils/sanitize.js";
+import { metadataQueue } from "../indexer/metadata-queue.js";
 
 /**
  * Fetch, digest, and store URI metadata for an agent
@@ -1282,7 +1258,7 @@ async function digestAndStoreUriMetadata(assetId: string, uri: string): Promise<
   // This prevents stale data from overwriting newer data due to out-of-order completion
   try {
     const agentResult = await db.query(
-      `SELECT agent_uri FROM agents WHERE id = $1`,
+      `SELECT agent_uri FROM agents WHERE asset = $1`,
       [assetId]
     );
     if (agentResult.rows.length === 0) {

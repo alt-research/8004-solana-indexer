@@ -68,6 +68,13 @@ export function createMockPrismaClient(): PrismaClient {
       create: vi.fn(),
       findMany: vi.fn().mockResolvedValue([]),
     },
+    revocation: {
+      findUnique: vi.fn(),
+      findMany: vi.fn().mockResolvedValue([]),
+      create: vi.fn(),
+      upsert: vi.fn(),
+      count: vi.fn().mockResolvedValue(0),
+    },
     orphanResponse: {
       findMany: vi.fn().mockResolvedValue([]),
       create: vi.fn(),

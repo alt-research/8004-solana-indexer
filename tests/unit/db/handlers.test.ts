@@ -262,7 +262,12 @@ describe("DB Handlers", () => {
     });
 
     describe("FeedbackRevoked", () => {
-      it("should mark feedback as revoked", async () => {
+      it("should mark feedback as revoked when feedback exists", async () => {
+        // Mock feedback lookup with matching hash
+        (prisma.feedback.findUnique as any).mockResolvedValue({
+          feedbackHash: Uint8Array.from(TEST_HASH),
+        });
+
         const event: ProgramEvent = {
           type: "FeedbackRevoked",
           data: {
@@ -294,12 +299,93 @@ describe("DB Handlers", () => {
             revoked: true,
           }),
         });
+
+        // Revocation should be stored with PENDING status (feedback exists)
+        expect(prisma.revocation.upsert).toHaveBeenCalledWith(
+          expect.objectContaining({
+            create: expect.objectContaining({
+              status: "PENDING",
+            }),
+          })
+        );
+      });
+
+      it("should store orphan revocation when feedback not found", async () => {
+        (prisma.feedback.findUnique as any).mockResolvedValue(null);
+
+        const event: ProgramEvent = {
+          type: "FeedbackRevoked",
+          data: {
+            asset: TEST_ASSET,
+            clientAddress: TEST_CLIENT,
+            feedbackIndex: 99n,
+            sealHash: TEST_HASH,
+            slot: 123456n,
+            originalScore: 85,
+            atomEnabled: false,
+            hadImpact: false,
+            newTrustTier: 0,
+            newQualityScore: 0,
+            newConfidence: 0,
+            newRevokeDigest: TEST_HASH,
+            newRevokeCount: 1n,
+          },
+        };
+
+        await handleEvent(prisma, event, ctx);
+
+        // Revocation still stored, but with ORPHANED status
+        expect(prisma.revocation.upsert).toHaveBeenCalledWith(
+          expect.objectContaining({
+            create: expect.objectContaining({
+              feedbackIndex: 99n,
+              status: "ORPHANED",
+            }),
+          })
+        );
+      });
+
+      it("should detect seal_hash mismatch on revocation", async () => {
+        const differentHash = new Uint8Array(32).fill(0xcd);
+        (prisma.feedback.findUnique as any).mockResolvedValue({
+          feedbackHash: Uint8Array.from(differentHash),
+        });
+
+        const event: ProgramEvent = {
+          type: "FeedbackRevoked",
+          data: {
+            asset: TEST_ASSET,
+            clientAddress: TEST_CLIENT,
+            feedbackIndex: 0n,
+            sealHash: TEST_HASH, // 0xab * 32
+            slot: 123456n,
+            originalScore: 0,
+            atomEnabled: true,
+            hadImpact: false,
+            newTrustTier: 0,
+            newQualityScore: 0,
+            newConfidence: 0,
+            newRevokeDigest: TEST_HASH,
+            newRevokeCount: 1n,
+          },
+        };
+
+        // Should not throw (still processes the revocation)
+        await handleEvent(prisma, event, ctx);
+
+        // updateMany + revocation still called despite mismatch
+        expect(prisma.feedback.updateMany).toHaveBeenCalled();
+        expect(prisma.revocation.upsert).toHaveBeenCalled();
       });
     });
 
     describe("ResponseAppended", () => {
-      it("should create feedback response when feedback exists", async () => {
-        const mockFeedback = { id: "feedback-uuid", agentId: TEST_ASSET.toBase58() };
+      it("should create feedback response when feedback exists with matching seal_hash", async () => {
+        const mockFeedback = {
+          id: "feedback-uuid",
+          agentId: TEST_ASSET.toBase58(),
+          feedbackHash: Uint8Array.from(TEST_HASH),
+        };
         (prisma.feedback.findUnique as any).mockResolvedValue(mockFeedback);
 
         const event: ProgramEvent = {
@@ -331,7 +417,7 @@ describe("DB Handlers", () => {
         );
       });
 
-      it("should not create response when feedback not found", async () => {
+      it("should store orphan response when feedback not found", async () => {
         (prisma.feedback.findUnique as any).mockResolvedValue(null);
 
         const event: ProgramEvent = {
@@ -352,7 +438,89 @@ describe("DB Handlers", () => {
 
         await handleEvent(prisma, event, ctx);
 
+        // Should NOT create feedbackResponse
         expect(prisma.feedbackResponse.upsert).not.toHaveBeenCalled();
+
+        // Should store as orphan
+        expect(prisma.orphanResponse.upsert).toHaveBeenCalledWith(
+          expect.objectContaining({
+            create: expect.objectContaining({
+              agentId: TEST_ASSET.toBase58(),
+              client: TEST_CLIENT.toBase58(),
+              feedbackIndex: 0n,
+              responder: TEST_OWNER.toBase58(),
+              responseUri: "ipfs://QmYYY",
+            }),
+          })
+        );
+      });
+
+      it("should still create response when seal_hash mismatches", async () => {
+        const differentHash = new Uint8Array(32).fill(0xcd);
+        const mockFeedback = {
+          id: "feedback-uuid",
+          agentId: TEST_ASSET.toBase58(),
+          feedbackHash: Uint8Array.from(differentHash), // Different from event sealHash
+        };
+        (prisma.feedback.findUnique as any).mockResolvedValue(mockFeedback);
+
+        const event: ProgramEvent = {
+          type: "ResponseAppended",
+          data: {
+            asset: TEST_ASSET,
+            client: TEST_CLIENT,
+            feedbackIndex: 0n,
+            responder: TEST_OWNER,
+            responseUri: "ipfs://QmYYY",
+            responseHash: TEST_HASH,
+            sealHash: TEST_HASH, // 0xab, different from 0xcd
+            slot: 123456n,
+            newResponseDigest: TEST_HASH,
+            newResponseCount: 1n,
+          },
+        };
+
+        // Should not throw, still processes despite mismatch
+        await handleEvent(prisma, event, ctx);
+
+        // Response still created (mismatch is logged, not blocking)
+        expect(prisma.feedbackResponse.upsert).toHaveBeenCalledWith(
+          expect.objectContaining({
+            create: expect.objectContaining({
+              feedbackId: "feedback-uuid",
+            }),
+          })
+        );
+      });
+
+      it("should handle null feedbackHash gracefully", async () => {
+        const mockFeedback = {
+          id: "feedback-uuid",
+          agentId: TEST_ASSET.toBase58(),
+          feedbackHash: null, // Feedback had no hash
+        };
+        (prisma.feedback.findUnique as any).mockResolvedValue(mockFeedback);
+
+        const event: ProgramEvent = {
+          type: "ResponseAppended",
+          data: {
+            asset: TEST_ASSET,
+            client: TEST_CLIENT,
+            feedbackIndex: 0n,
+            responder: TEST_OWNER,
+            responseUri: "ipfs://QmYYY",
+            responseHash: TEST_HASH,
+            sealHash: new Uint8Array(32).fill(0), // All-zero = normalized to null
+            slot: 123456n,
+            newResponseDigest: TEST_HASH,
+            newResponseCount: 1n,
+          },
+        };
+
+        await handleEvent(prisma, event, ctx);
+
+        // Both null → match, no warning
+        expect(prisma.feedbackResponse.upsert).toHaveBeenCalled();
       });
     });
 

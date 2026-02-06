@@ -601,6 +601,30 @@ async function handleFeedbackRevokedTx(
   const assetId = data.asset.toBase58();
   const clientAddress = data.clientAddress.toBase58();
   const id = `${assetId}:${clientAddress}:${data.feedbackIndex}`;
+
+  // Check feedback exists and validate seal_hash
+  const feedbackCheck = await client.query(
+    `SELECT id, feedback_hash FROM feedbacks WHERE id = $1 LIMIT 1`,
+    [id]
+  );
+  if (feedbackCheck.rowCount === 0) {
+    logger.warn(
+      { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
+      "Feedback not found for revocation (orphan revoke)"
+    );
+  } else {
+    const storedHash = feedbackCheck.rows[0].feedback_hash;
+    const eventHash = (data.sealHash && !data.sealHash.every(b => b === 0))
+      ? Buffer.from(data.sealHash).toString("hex")
+      : null;
+    if (storedHash !== eventHash) {
+      logger.warn(
+        { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
+        "seal_hash mismatch: revocation sealHash does not match stored feedbackHash"
+      );
+    }
+  }
+
   await client.query(
     `UPDATE feedbacks SET
        is_revoked = true,
@@ -638,7 +662,7 @@ async function handleFeedbackRevokedTx(
       [ctx.blockTime.toISOString(), assetId, data.newTrustTier, data.newQualityScore, data.newConfidence]
     );
   }
-  logger.info({ assetId, feedbackIndex: data.feedbackIndex.toString(), hadImpact: data.hadImpact }, "Feedback revoked");
+  logger.info({ assetId, feedbackIndex: data.feedbackIndex.toString(), hadImpact: data.hadImpact, orphan: feedbackCheck.rowCount === 0 }, "Feedback revoked");
 }
 
 async function handleResponseAppendedTx(
@@ -651,17 +675,42 @@ async function handleResponseAppendedTx(
   const responder = data.responder.toBase58();
   const id = `${assetId}:${clientAddress}:${data.feedbackIndex}:${responder}:${ctx.signature}`;
   const feedbackCheck = await client.query(
-    `SELECT id FROM feedbacks WHERE asset = $1 AND client_address = $2 AND feedback_index = $3 LIMIT 1`,
+    `SELECT id, feedback_hash FROM feedbacks WHERE asset = $1 AND client_address = $2 AND feedback_index = $3 LIMIT 1`,
     [assetId, clientAddress, data.feedbackIndex.toString()]
   );
-  if (feedbackCheck.rowCount === 0) {
-    logger.warn({ assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
-      "Feedback not found for response - storing as orphan (will link on backfill)");
-  }
+
   const isAllZeroHash = data.responseHash && data.responseHash.every(b => b === 0);
   const responseHash = (data.responseHash && !isAllZeroHash)
     ? Buffer.from(data.responseHash).toString("hex")
     : null;
+
+  if (feedbackCheck.rowCount === 0) {
+    logger.warn({ assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
+      "Feedback not found for response - storing as orphan");
+    await client.query(
+      `INSERT INTO feedback_responses (id, asset, client_address, feedback_index, responder, response_uri, response_hash, block_slot, tx_index, tx_signature, created_at, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       ON CONFLICT (id) DO NOTHING`,
+      [id, assetId, clientAddress, data.feedbackIndex.toString(), responder, data.responseUri || null,
+       responseHash,
+       ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString(), "ORPHANED"]
+    );
+    logger.info({ assetId, feedbackIndex: data.feedbackIndex.toString(), responder }, "Orphan response stored");
+    return;
+  }
+
+  // Validate seal_hash matches stored feedback_hash
+  const storedHash = feedbackCheck.rows[0].feedback_hash;
+  const eventHash = (data.sealHash && !data.sealHash.every(b => b === 0))
+    ? Buffer.from(data.sealHash).toString("hex")
+    : null;
+  if (storedHash !== eventHash) {
+    logger.warn(
+      { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
+      "seal_hash mismatch: response sealHash does not match stored feedbackHash"
+    );
+  }
+
   await client.query(
     `INSERT INTO feedback_responses (id, asset, client_address, feedback_index, responder, response_uri, response_hash, block_slot, tx_index, tx_signature, created_at, status)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
@@ -1014,7 +1063,29 @@ async function handleFeedbackRevoked(
   const id = `${assetId}:${clientAddress}:${data.feedbackIndex}`;
 
   try {
-    // Update feedback record (mark as revoked, ATOM stats update goes to agents table)
+    // Check feedback exists and validate seal_hash
+    const feedbackCheck = await db.query(
+      `SELECT id, feedback_hash FROM feedbacks WHERE id = $1 LIMIT 1`,
+      [id]
+    );
+    if (feedbackCheck.rowCount === 0) {
+      logger.warn(
+        { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
+        "Feedback not found for revocation (orphan revoke)"
+      );
+    } else {
+      const storedHash = feedbackCheck.rows[0].feedback_hash;
+      const eventHash = (data.sealHash && !data.sealHash.every(b => b === 0))
+        ? Buffer.from(data.sealHash).toString("hex")
+        : null;
+      if (storedHash !== eventHash) {
+        logger.warn(
+          { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
+          "seal_hash mismatch: revocation sealHash does not match stored feedbackHash"
+        );
+      }
+    }
+
     await db.query(
       `UPDATE feedbacks SET
          is_revoked = true,
@@ -1056,7 +1127,7 @@ async function handleFeedbackRevoked(
       );
     }
 
-    logger.info({ assetId, feedbackIndex: data.feedbackIndex.toString(), hadImpact: data.hadImpact }, "Feedback revoked");
+    logger.info({ assetId, feedbackIndex: data.feedbackIndex.toString(), hadImpact: data.hadImpact, orphan: feedbackCheck.rowCount === 0 }, "Feedback revoked");
   } catch (error: any) {
     logger.error({ error: error.message, assetId, feedbackIndex: data.feedbackIndex }, "Failed to revoke feedback");
   }
@@ -1070,34 +1141,53 @@ async function handleResponseAppended(
   const assetId = data.asset.toBase58();
   const clientAddress = data.client.toBase58();
   const responder = data.responder.toBase58();
-  // Multiple responses per responder allowed (ERC-8004) - include tx_signature in id
   const id = `${assetId}:${clientAddress}:${data.feedbackIndex}:${responder}:${ctx.signature}`;
 
   try {
-    // Check if feedback exists - if not, store as orphan response
     const feedbackCheck = await db.query(
-      `SELECT id FROM feedbacks WHERE asset = $1 AND client_address = $2 AND feedback_index = $3 LIMIT 1`,
+      `SELECT id, feedback_hash FROM feedbacks WHERE asset = $1 AND client_address = $2 AND feedback_index = $3 LIMIT 1`,
       [assetId, clientAddress, data.feedbackIndex.toString()]
     );
 
-    if (feedbackCheck.rowCount === 0) {
-      logger.warn({ assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
-        "Feedback not found for response - storing as orphan (will link on backfill)");
-    }
-
-    // Normalize optional hash: all-zero means "no hash" for IPFS
     const isAllZeroHash = data.responseHash && data.responseHash.every(b => b === 0);
     const responseHash = (data.responseHash && !isAllZeroHash)
       ? Buffer.from(data.responseHash).toString("hex")
       : null;
 
+    if (feedbackCheck.rowCount === 0) {
+      logger.warn({ assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
+        "Feedback not found for response - storing as orphan");
+      await db.query(
+        `INSERT INTO feedback_responses (id, asset, client_address, feedback_index, responder, response_uri, response_hash, block_slot, tx_index, tx_signature, created_at, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         ON CONFLICT (id) DO NOTHING`,
+        [id, assetId, clientAddress, data.feedbackIndex.toString(), responder, data.responseUri || null,
+         responseHash,
+         ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString(), "ORPHANED"]
+      );
+      logger.info({ assetId, feedbackIndex: data.feedbackIndex.toString(), responder }, "Orphan response stored");
+      return;
+    }
+
+    // Validate seal_hash matches stored feedback_hash
+    const storedHash = feedbackCheck.rows[0].feedback_hash;
+    const eventHash = (data.sealHash && !data.sealHash.every(b => b === 0))
+      ? Buffer.from(data.sealHash).toString("hex")
+      : null;
+    if (storedHash !== eventHash) {
+      logger.warn(
+        { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
+        "seal_hash mismatch: response sealHash does not match stored feedbackHash"
+      );
+    }
+
     await db.query(
-      `INSERT INTO feedback_responses (id, asset, client_address, feedback_index, responder, response_uri, response_hash, block_slot, tx_index, tx_signature, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      `INSERT INTO feedback_responses (id, asset, client_address, feedback_index, responder, response_uri, response_hash, block_slot, tx_index, tx_signature, created_at, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        ON CONFLICT (id) DO NOTHING`,
       [id, assetId, clientAddress, data.feedbackIndex.toString(), responder, data.responseUri || null,
        responseHash,
-       ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString()]
+       ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString(), DEFAULT_STATUS]
     );
     logger.info({ assetId, feedbackIndex: data.feedbackIndex.toString(), responder }, "Response appended");
   } catch (error: any) {

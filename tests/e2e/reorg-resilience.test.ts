@@ -61,18 +61,17 @@ describe("E2E: Reorg Resilience", () => {
 
     it("should create registry with status=PENDING", async () => {
       const event: ProgramEvent = {
-        type: "BaseRegistryCreated",
+        type: "RegistryInitialized",
         data: {
-          registry: TEST_REGISTRY,
           collection: TEST_COLLECTION,
-          createdBy: TEST_OWNER,
+          authority: TEST_OWNER,
         },
       };
 
       await handleEvent(prisma, event, ctx);
 
       const registry = await prisma.registry.findUnique({
-        where: { id: TEST_REGISTRY.toBase58() },
+        where: { id: TEST_COLLECTION.toBase58() },
       });
 
       expect(registry).not.toBeNull();
@@ -82,10 +81,9 @@ describe("E2E: Reorg Resilience", () => {
 
     it("should create agent with status=PENDING", async () => {
       const event: ProgramEvent = {
-        type: "AgentRegisteredInRegistry",
+        type: "AgentRegistered",
         data: {
           asset: TEST_AGENT_REORG,
-          registry: TEST_REGISTRY,
           collection: TEST_COLLECTION,
           owner: TEST_OWNER,
           atomEnabled: true,
@@ -137,6 +135,7 @@ describe("E2E: Reorg Resilience", () => {
           asset: TEST_AGENT_REORG,
           clientAddress: TEST_CLIENT,
           feedbackIndex: 0n,
+          slot: 100000n,
           value: 9000n,
           valueDecimals: 2,
           score: 90,
@@ -144,11 +143,14 @@ describe("E2E: Reorg Resilience", () => {
           tag2: "test",
           endpoint: "/api/test",
           feedbackUri: "ipfs://QmReorgTest",
-          feedbackHash: Buffer.alloc(32).fill(1),
+          feedbackFileHash: null,
+          sealHash: new Uint8Array(32).fill(1),
           atomEnabled: true,
+          newFeedbackDigest: new Uint8Array(32).fill(0xaa),
+          newFeedbackCount: 1n,
           newTrustTier: 1,
-          newQualityScore: 90,
-          newConfidence: 50,
+          newQualityScore: 9000,
+          newConfidence: 5000,
           newRiskScore: 5,
           newDiversityRatio: 100,
           isUniqueClient: true,
@@ -176,9 +178,13 @@ describe("E2E: Reorg Resilience", () => {
           asset: TEST_AGENT_REORG,
           client: TEST_CLIENT,
           feedbackIndex: 0n,
+          slot: 100001n,
           responder: TEST_OWNER,
           responseUri: "ipfs://QmReorgResponse",
-          responseHash: Buffer.alloc(32).fill(2),
+          responseHash: new Uint8Array(32).fill(2),
+          sealHash: new Uint8Array(32).fill(1),
+          newResponseDigest: new Uint8Array(32).fill(0xbb),
+          newResponseCount: 1n,
         },
       };
 
@@ -204,9 +210,9 @@ describe("E2E: Reorg Resilience", () => {
         data: {
           asset: TEST_AGENT_REORG,
           validatorAddress: TEST_VALIDATOR,
-          nonce: 1,
+          nonce: 1n,
           requestUri: "ipfs://QmReorgValidation",
-          requestHash: Buffer.alloc(32).fill(3),
+          requestHash: new Uint8Array(32).fill(3),
           requester: TEST_OWNER,
         },
       };
@@ -242,10 +248,9 @@ describe("E2E: Reorg Resilience", () => {
       const newAgent = new PublicKey("2Bip1P7aedFwmy1jbDuP3btdeQMAVWzgMHU4s6sbt1Mg");
 
       const event: ProgramEvent = {
-        type: "AgentRegisteredInRegistry",
+        type: "AgentRegistered",
         data: {
           asset: newAgent,
-          registry: TEST_REGISTRY,
           collection: TEST_COLLECTION,
           owner: TEST_OWNER,
           atomEnabled: false,
@@ -282,10 +287,9 @@ describe("E2E: Reorg Resilience", () => {
       const oldAgent = new PublicKey("8yGjVHBQaxZyDWEZ3Cj6UrKag4qDnUX3d7ygiJoCZYu1");
 
       const event: ProgramEvent = {
-        type: "AgentRegisteredInRegistry",
+        type: "AgentRegistered",
         data: {
           asset: oldAgent,
-          registry: TEST_REGISTRY,
           collection: TEST_COLLECTION,
           owner: TEST_OWNER,
           atomEnabled: false,
@@ -369,7 +373,7 @@ describe("E2E: Reorg Resilience", () => {
           id: orphanAgent,
           owner: TEST_OWNER.toBase58(),
           collection: TEST_COLLECTION.toBase58(),
-          registry: TEST_REGISTRY.toBase58(),
+          registry: TEST_COLLECTION.toBase58(),
           nftName: "Orphan Agent",
           uri: "https://example.com/orphan.json",
           status: "PENDING",
@@ -406,7 +410,7 @@ describe("E2E: Reorg Resilience", () => {
           id: newAgent.toBase58(),
           owner: TEST_OWNER.toBase58(),
           collection: TEST_COLLECTION.toBase58(),
-          registry: TEST_REGISTRY.toBase58(),
+          registry: TEST_COLLECTION.toBase58(),
           nftName: "New Agent",
           uri: "https://example.com/new.json",
           status: "PENDING",
@@ -587,7 +591,7 @@ describe("E2E: Reorg Resilience", () => {
           id: testAgent.toBase58(),
           owner: TEST_OWNER.toBase58(),
           collection: TEST_COLLECTION.toBase58(),
-          registry: TEST_REGISTRY.toBase58(),
+          registry: TEST_COLLECTION.toBase58(),
           nftName: "Stats Test Agent",
           uri: "https://example.com/stats.json",
           status: "PENDING",
@@ -723,7 +727,7 @@ describe("E2E: Reorg Resilience", () => {
           uri: "https://test.com/agent.json",
           nftName: "Finalize Test Agent",
           collection: TEST_COLLECTION.toBase58(),
-          registry: TEST_REGISTRY.toBase58(),
+          registry: TEST_COLLECTION.toBase58(),
           atomEnabled: true,
           status: "PENDING",
         },
@@ -786,7 +790,7 @@ describe("E2E: Reorg Resilience", () => {
           uri: "https://test.com/agent.json",
           nftName: "Response Test Agent",
           collection: TEST_COLLECTION.toBase58(),
-          registry: TEST_REGISTRY.toBase58(),
+          registry: TEST_COLLECTION.toBase58(),
           atomEnabled: true,
           status: "PENDING",
         },
@@ -862,7 +866,7 @@ describe("E2E: Reorg Resilience", () => {
           uri: "https://test.com/orphan-agent.json",
           nftName: "Orphan Test Agent",
           collection: TEST_COLLECTION.toBase58(),
-          registry: TEST_REGISTRY.toBase58(),
+          registry: TEST_COLLECTION.toBase58(),
           atomEnabled: true,
           status: "PENDING",
         },
@@ -1051,10 +1055,9 @@ describe("E2E: Reorg Resilience", () => {
 
       // 1. Register agent (PENDING)
       await handleEvent(prisma, {
-        type: "AgentRegisteredInRegistry",
+        type: "AgentRegistered",
         data: {
           asset: lifecycleAgent,
-          registry: TEST_REGISTRY,
           collection: TEST_COLLECTION,
           owner: TEST_OWNER,
           atomEnabled: true,
@@ -1208,14 +1211,14 @@ describe("E2E: Reorg Resilience", () => {
 
       // Reset registry status
       await prisma.registry.update({
-        where: { id: TEST_REGISTRY.toBase58() },
+        where: { id: TEST_COLLECTION.toBase58() },
         data: { status: "PENDING", slot: 1000n },
       });
 
       await (verifier as any).verifyRegistries(490000n);
 
       const updated = await prisma.registry.findUnique({
-        where: { id: TEST_REGISTRY.toBase58() },
+        where: { id: TEST_COLLECTION.toBase58() },
       });
 
       expect(updated!.status).toBe("FINALIZED");

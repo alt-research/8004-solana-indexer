@@ -71,6 +71,19 @@ function normalizeHash(hash: Uint8Array | number[]): Uint8Array<ArrayBuffer> | n
   return Uint8Array.from(hash) as Uint8Array<ArrayBuffer>;
 }
 
+/**
+ * Compare two hash values for semantic matching (seal_hash vs feedback_hash)
+ */
+function hashesMatch(a: Uint8Array | Uint8Array<ArrayBuffer> | null | undefined, b: Uint8Array | Uint8Array<ArrayBuffer> | null | undefined): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
 export interface EventContext {
   signature: string;
   slot: bigint;
@@ -895,6 +908,30 @@ async function handleFeedbackRevokedTx(
 ): Promise<void> {
   const assetId = data.asset.toBase58();
   const clientAddress = data.clientAddress.toBase58();
+  const eventSealHash = normalizeHash(data.sealHash);
+
+  const feedback = await tx.feedback.findUnique({
+    where: {
+      agentId_client_feedbackIndex: {
+        agentId: assetId,
+        client: clientAddress,
+        feedbackIndex: data.feedbackIndex,
+      },
+    },
+    select: { feedbackHash: true },
+  });
+
+  if (!feedback) {
+    logger.warn(
+      { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
+      "Feedback not found for revocation (orphan revoke)"
+    );
+  } else if (!hashesMatch(eventSealHash, feedback.feedbackHash)) {
+    logger.warn(
+      { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
+      "seal_hash mismatch: revocation sealHash does not match stored feedbackHash"
+    );
+  }
 
   await tx.feedback.updateMany({
     where: { agentId: assetId, client: clientAddress, feedbackIndex: data.feedbackIndex },
@@ -907,7 +944,7 @@ async function handleFeedbackRevokedTx(
       agentId: assetId,
       client: clientAddress,
       feedbackIndex: data.feedbackIndex,
-      feedbackHash: normalizeHash(data.sealHash),
+      feedbackHash: eventSealHash,
       slot: data.slot,
       originalScore: data.originalScore,
       atomEnabled: data.atomEnabled,
@@ -915,12 +952,12 @@ async function handleFeedbackRevokedTx(
       runningDigest: Uint8Array.from(data.newRevokeDigest) as Uint8Array<ArrayBuffer>,
       revokeCount: data.newRevokeCount,
       txSignature: ctx.signature,
-      status: DEFAULT_STATUS,
+      status: !feedback ? "ORPHANED" : DEFAULT_STATUS,
     },
     update: {},
   });
 
-  logger.info({ assetId, feedbackIndex: data.feedbackIndex.toString() }, "Feedback revoked");
+  logger.info({ assetId, feedbackIndex: data.feedbackIndex.toString(), orphan: !feedback }, "Feedback revoked");
 }
 
 async function handleFeedbackRevoked(
@@ -930,6 +967,30 @@ async function handleFeedbackRevoked(
 ): Promise<void> {
   const assetId = data.asset.toBase58();
   const clientAddress = data.clientAddress.toBase58();
+  const eventSealHash = normalizeHash(data.sealHash);
+
+  const feedback = await prisma.feedback.findUnique({
+    where: {
+      agentId_client_feedbackIndex: {
+        agentId: assetId,
+        client: clientAddress,
+        feedbackIndex: data.feedbackIndex,
+      },
+    },
+    select: { feedbackHash: true },
+  });
+
+  if (!feedback) {
+    logger.warn(
+      { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
+      "Feedback not found for revocation (orphan revoke)"
+    );
+  } else if (!hashesMatch(eventSealHash, feedback.feedbackHash)) {
+    logger.warn(
+      { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
+      "seal_hash mismatch: revocation sealHash does not match stored feedbackHash"
+    );
+  }
 
   await prisma.feedback.updateMany({
     where: { agentId: assetId, client: clientAddress, feedbackIndex: data.feedbackIndex },
@@ -942,7 +1003,7 @@ async function handleFeedbackRevoked(
       agentId: assetId,
       client: clientAddress,
       feedbackIndex: data.feedbackIndex,
-      feedbackHash: normalizeHash(data.sealHash),
+      feedbackHash: eventSealHash,
       slot: data.slot,
       originalScore: data.originalScore,
       atomEnabled: data.atomEnabled,
@@ -950,12 +1011,12 @@ async function handleFeedbackRevoked(
       runningDigest: Uint8Array.from(data.newRevokeDigest) as Uint8Array<ArrayBuffer>,
       revokeCount: data.newRevokeCount,
       txSignature: ctx.signature,
-      status: DEFAULT_STATUS,
+      status: !feedback ? "ORPHANED" : DEFAULT_STATUS,
     },
     update: {},
   });
 
-  logger.info({ assetId, feedbackIndex: data.feedbackIndex.toString() }, "Feedback revoked");
+  logger.info({ assetId, feedbackIndex: data.feedbackIndex.toString(), orphan: !feedback }, "Feedback revoked");
 }
 
 async function handleResponseAppendedTx(
@@ -1005,6 +1066,15 @@ async function handleResponseAppendedTx(
     logger.info({ assetId, feedbackIndex: data.feedbackIndex.toString() }, "Orphan response stored");
     return;
   }
+
+  const eventSealHash = normalizeHash(data.sealHash);
+  if (!hashesMatch(eventSealHash, feedback.feedbackHash)) {
+    logger.warn(
+      { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
+      "seal_hash mismatch: response sealHash does not match stored feedbackHash"
+    );
+  }
+
   await tx.feedbackResponse.upsert({
     where: {
       feedbackId_responder_txSignature: {
@@ -1048,8 +1118,6 @@ async function handleResponseAppended(
   });
 
   if (!feedback) {
-    // Store as orphan response (parity with Supabase)
-    // Feedback may not be indexed yet or indexer started after feedback was created
     logger.warn(
       { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
       "Feedback not found, storing as orphan response"
@@ -1083,6 +1151,14 @@ async function handleResponseAppended(
       "Orphan response stored"
     );
     return;
+  }
+
+  const eventSealHash = normalizeHash(data.sealHash);
+  if (!hashesMatch(eventSealHash, feedback.feedbackHash)) {
+    logger.warn(
+      { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
+      "seal_hash mismatch: response sealHash does not match stored feedbackHash"
+    );
   }
 
   await prisma.feedbackResponse.upsert({

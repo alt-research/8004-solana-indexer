@@ -599,8 +599,8 @@ const STANDARD_FIELDS: Record<string, string> = {
   supportedTrust: "_uri:supported_trust", // Trust mechanisms array
 };
 
-// Maximum redirect depth to prevent infinite loops
-const MAX_REDIRECT_DEPTH = 5;
+// Maximum redirect depth to prevent infinite loops and SSRF via redirect chains
+const MAX_REDIRECT_DEPTH = 3;
 
 /**
  * Fetch and digest URI metadata

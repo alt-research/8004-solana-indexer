@@ -25,6 +25,8 @@ const BATCH_SIZE_DB = 500;         // Max events per DB transaction
 const FLUSH_INTERVAL_MS = 500;     // Flush every 500ms even if batch not full
 const MAX_PARALLEL_RPC = 3;        // Parallel RPC batch requests
 const MAX_DEAD_LETTER = 10000;     // Max events in dead letter queue (memory protection)
+const DEAD_LETTER_BACKPRESSURE = 0.8; // Warn at 80% capacity
+const DEAD_LETTER_MAX_AGE_MS = 5 * 60 * 1000; // Evict entries older than 5 minutes
 
 // Helper to check for all-zero hash (empty hash should be NULL, not "00...00")
 function isAllZeroHash(hash: Uint8Array | undefined | null): boolean {
@@ -45,6 +47,11 @@ export interface BatchEvent {
     blockTime: Date;
     txIndex?: number;
   };
+}
+
+interface DeadLetterEntry {
+  event: BatchEvent;
+  addedAt: number;
 }
 
 export interface BatchStats {
@@ -177,7 +184,7 @@ export class EventBuffer {
   private prisma: PrismaClient | null = null;
   private lastCtx: BatchEvent["ctx"] | null = null;
   private retryCount = 0;
-  private deadLetterQueue: BatchEvent[] = [];
+  private deadLetterQueue: DeadLetterEntry[] = [];
 
   private stats = {
     eventsBuffered: 0,
@@ -193,10 +200,39 @@ export class EventBuffer {
   }
 
   /**
+   * Evict dead letter entries older than DEAD_LETTER_MAX_AGE_MS
+   */
+  private evictStaleDeadLetters(): void {
+    const now = Date.now();
+    const before = this.deadLetterQueue.length;
+    this.deadLetterQueue = this.deadLetterQueue.filter(
+      entry => (now - entry.addedAt) < DEAD_LETTER_MAX_AGE_MS
+    );
+    const evicted = before - this.deadLetterQueue.length;
+    if (evicted > 0) {
+      logger.warn({ evicted, remaining: this.deadLetterQueue.length },
+        "Evicted stale dead letter entries (older than 5 minutes)");
+    }
+  }
+
+  /**
    * Add event to buffer
    * Auto-flushes when buffer is full
    */
   async addEvent(event: BatchEvent): Promise<void> {
+    // Backpressure: evict stale dead letter entries and warn if near capacity
+    if (this.deadLetterQueue.length > 0) {
+      this.evictStaleDeadLetters();
+    }
+    const dlqUtilization = this.deadLetterQueue.length / MAX_DEAD_LETTER;
+    if (dlqUtilization > DEAD_LETTER_BACKPRESSURE) {
+      logger.warn({
+        deadLetterSize: this.deadLetterQueue.length,
+        maxCapacity: MAX_DEAD_LETTER,
+        utilization: `${Math.round(dlqUtilization * 100)}%`
+      }, "Dead letter queue backpressure: queue is above 80% capacity, DB writes may be failing");
+    }
+
     this.buffer.push(event);
     this.lastCtx = event.ctx;
     this.stats.eventsBuffered++;
@@ -229,6 +265,7 @@ export class EventBuffer {
     const eventsToFlush = [...this.buffer];
     const lastCtx = this.lastCtx;
     this.buffer = [];
+    this.lastCtx = null;
 
     const startTime = Date.now();
 
@@ -260,17 +297,21 @@ export class EventBuffer {
           retryCount: this.retryCount
         }, "Max retries exceeded, moving events to dead letter queue");
 
+        // Evict stale entries before adding new ones
+        this.evictStaleDeadLetters();
+
         // Memory protection: cap dead letter queue size
+        const now = Date.now();
         const spaceAvailable = MAX_DEAD_LETTER - this.deadLetterQueue.length;
         if (spaceAvailable <= 0) {
           logger.error({ dropped: eventsToFlush.length }, "Dead letter queue full, dropping events");
         } else if (eventsToFlush.length > spaceAvailable) {
           const toKeep = eventsToFlush.slice(0, spaceAvailable);
           const dropped = eventsToFlush.length - toKeep.length;
-          this.deadLetterQueue.push(...toKeep);
+          this.deadLetterQueue.push(...toKeep.map(e => ({ event: e, addedAt: now })));
           logger.error({ dropped, kept: toKeep.length }, "Dead letter queue nearly full, some events dropped");
         } else {
-          this.deadLetterQueue.push(...eventsToFlush);
+          this.deadLetterQueue.push(...eventsToFlush.map(e => ({ event: e, addedAt: now })));
         }
         this.stats.deadLettered += eventsToFlush.length;
         this.retryCount = 0;
@@ -291,7 +332,7 @@ export class EventBuffer {
    * Get dead letter queue events (for manual inspection/replay)
    */
   getDeadLetterQueue(): BatchEvent[] {
-    return [...this.deadLetterQueue];
+    return this.deadLetterQueue.map(entry => entry.event);
   }
 
   /**

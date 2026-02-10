@@ -9,6 +9,7 @@ import { startApiServer } from "./api/server.js";
 import { cleanupOrphanResponses } from "./db/handlers.js";
 import { getPool } from "./db/supabase.js";
 import { IDL_VERSION, IDL_PROGRAM_ID } from "./parser/decoder.js";
+import { metadataQueue } from "./indexer/metadata-queue.js";
 
 async function main() {
   try {
@@ -93,6 +94,7 @@ async function main() {
     logger.info({ signal }, "Shutdown signal received");
 
     try {
+      metadataQueue.shutdown();
       await processor.stop();
       if (apiServer) {
         await new Promise<void>((resolve, reject) => {

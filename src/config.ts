@@ -109,6 +109,11 @@ export const config = {
 export function validateConfig(): void {
   // Mode validations already done at parse time (parseDbMode, parseIndexerMode, parseMetadataMode)
 
+  // Warn about disabled SSL verification
+  if (!config.supabaseSslVerify) {
+    console.warn('[SECURITY WARNING] SUPABASE_SSL_VERIFY=false — TLS certificate verification is disabled for database connections. This is vulnerable to MITM attacks. Do NOT use in production.');
+  }
+
   // Validate Supabase config when in supabase mode
   if (config.dbMode === "supabase") {
     if (!config.supabaseDsn) {

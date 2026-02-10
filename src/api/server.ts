@@ -24,6 +24,10 @@ const LEADERBOARD_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minute cache for leaderboar
 const LEADERBOARD_CACHE_MAX_SIZE = 100; // Max collections to cache (LRU eviction)
 const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
 const RATE_LIMIT_MAX_REQUESTS = 100; // 100 requests per minute per IP
+const REPLAY_RATE_LIMIT_WINDOW_MS = 30 * 1000; // 30 seconds
+const REPLAY_RATE_LIMIT_MAX_REQUESTS = 1; // 1 request per 30s per IP
+const REPLAY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minute cache for replay results
+const REPLAY_CACHE_MAX_SIZE = 50;
 
 export interface ApiServerOptions {
   prisma: PrismaClient;
@@ -43,6 +47,15 @@ const collectionStatsCache = new LRUCache<string, CollectionStatsEntry[]>({
   max: 10, // Small cache - only need to cache "all collections" and a few individual ones
   ttl: LEADERBOARD_CACHE_TTL_MS, // Same 5 minute TTL
 });
+
+// Cache for replay verification results (prevents repeated expensive replays)
+const replayCache = new LRUCache<string, import('../services/replay-verifier.js').VerificationResult>({
+  max: REPLAY_CACHE_MAX_SIZE,
+  ttl: REPLAY_CACHE_TTL_MS,
+});
+
+// Base58 alphabet for input validation
+const BASE58_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 /**
  * Safely extract string from query parameter
@@ -206,6 +219,9 @@ export function createApiServer(options: ApiServerOptions): Express {
 
   // CORS - allow configurable origins
   const allowedOrigins = process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) || ['*'];
+  if (allowedOrigins.includes('*')) {
+    logger.warn('CORS_ORIGINS not set, defaulting to wildcard (*). Set CORS_ORIGINS env var for production.');
+  }
   app.use(cors({
     origin: allowedOrigins.includes('*') ? '*' : allowedOrigins,
     methods: ['GET', 'OPTIONS'],
@@ -238,6 +254,15 @@ export function createApiServer(options: ApiServerOptions): Express {
     legacyHeaders: false,
   });
   app.use(limiter);
+
+  // Dedicated rate limiter for replay verification (expensive endpoint)
+  const replayLimiter = rateLimit({
+    windowMs: REPLAY_RATE_LIMIT_WINDOW_MS,
+    max: REPLAY_RATE_LIMIT_MAX_REQUESTS,
+    message: { error: 'Replay verification rate limited. Try again in 30 seconds.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
 
   // GET /rest/v1/agents - List agents with filters (PostgREST format)
   app.get('/rest/v1/agents', async (req: Request, res: Response) => {
@@ -971,6 +996,7 @@ export function createApiServer(options: ApiServerOptions): Express {
     try {
       const asset = safeQueryString(req.params.asset);
       if (!asset) { res.status(400).json({ error: 'asset parameter required' }); return; }
+      if (!BASE58_REGEX.test(asset)) { res.status(400).json({ error: 'Invalid asset: must be a base58-encoded public key (32-44 chars)' }); return; }
       const chainType = safeQueryString(req.query.chainType);
       const limit = safePaginationLimit(req.query.limit);
       const offset = safePaginationOffset(req.query.offset);
@@ -1003,6 +1029,7 @@ export function createApiServer(options: ApiServerOptions): Express {
     try {
       const asset = safeQueryString(req.params.asset);
       if (!asset) { res.status(400).json({ error: 'asset parameter required' }); return; }
+      if (!BASE58_REGEX.test(asset)) { res.status(400).json({ error: 'Invalid asset: must be a base58-encoded public key (32-44 chars)' }); return; }
 
       const [feedback, response, revoke] = await Promise.all(
         ['feedback', 'response', 'revoke'].map(ct =>
@@ -1026,13 +1053,19 @@ export function createApiServer(options: ApiServerOptions): Express {
     }
   });
 
-  // GET /rest/v1/verify/replay/:asset - Trigger full replay verification
-  app.get('/rest/v1/verify/replay/:asset', async (req: Request, res: Response) => {
+  // GET /rest/v1/verify/replay/:asset - Trigger incremental replay verification
+  app.get('/rest/v1/verify/replay/:asset', replayLimiter, async (req: Request, res: Response) => {
     try {
       const asset = safeQueryString(req.params.asset);
       if (!asset) { res.status(400).json({ error: 'asset parameter required' }); return; }
+      if (!BASE58_REGEX.test(asset)) { res.status(400).json({ error: 'Invalid asset: must be a base58-encoded public key (32-44 chars)' }); return; }
+
+      const cached = replayCache.get(asset);
+      if (cached) { res.json(cached); return; }
+
       const verifier = new ReplayVerifier(prisma);
-      const result = await verifier.fullReplay(asset);
+      const result = await verifier.incrementalVerify(asset);
+      replayCache.set(asset, result);
       res.json(result);
     } catch (error) {
       logger.error({ error }, 'Error during replay verification');
@@ -1045,6 +1078,7 @@ export function createApiServer(options: ApiServerOptions): Express {
     try {
       const asset = safeQueryString(req.params.asset);
       if (!asset) { res.status(400).json({ error: 'asset parameter required' }); return; }
+      if (!BASE58_REGEX.test(asset)) { res.status(400).json({ error: 'Invalid asset: must be a base58-encoded public key (32-44 chars)' }); return; }
       const chainType = safeQueryString(req.query.chainType) || 'feedback';
       const fromCount = parseInt(safeQueryString(req.query.fromCount) || '0', 10);
       const toCountStr = safeQueryString(req.query.toCount);

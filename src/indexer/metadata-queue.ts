@@ -52,6 +52,7 @@ class MetadataQueue {
   private queue: PQueue;
   private pool: Pool | null = null;
   private pending = new Map<string, MetadataTask>(); // assetId -> latest task
+  private statsInterval: NodeJS.Timeout | null = null;
   private stats = {
     queued: 0,
     processed: 0,
@@ -68,8 +69,7 @@ class MetadataQueue {
       timeout: TIMEOUT_MS,
     });
 
-    // Log stats periodically
-    setInterval(() => this.logStats(), 60000);
+    this.statsInterval = setInterval(() => this.logStats(), 60000);
   }
 
   /**
@@ -264,6 +264,16 @@ class MetadataQueue {
    */
   async drain(): Promise<void> {
     await this.queue.onIdle();
+  }
+
+  /**
+   * Clean up resources for graceful shutdown
+   */
+  shutdown(): void {
+    if (this.statsInterval) {
+      clearInterval(this.statsInterval);
+      this.statsInterval = null;
+    }
   }
 
   private logStats(): void {

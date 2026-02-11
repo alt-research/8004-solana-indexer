@@ -34,6 +34,7 @@
     "bench:vitest:bun": "bun scripts/benchmark-vitest-runtime.mjs --runtime=bun -- run tests/unit/config.test.ts tests/unit/parser/types.test.ts tests/unit/logger.test.ts",
     "bench:vitest:full": "bun scripts/benchmark-vitest-runtime.mjs",
     "bench:hashchain": "bunx tsx scripts/benchmark-hashchain.ts",
+    "bench:hashchain:massive": "HASHCHAIN_SCALES=100000,500000,1000000 HASHCHAIN_ITERATIONS=1 HASHCHAIN_WARMUP=0 bunx tsx scripts/benchmark-hashchain.ts",
     "bench:graphql:sql": "node scripts/benchmark-graphql-sql.mjs",
     "check:graphql:coherence": "node scripts/check-graphql-coherence.mjs",
     "lint": "bunx eslint src --ext .ts",

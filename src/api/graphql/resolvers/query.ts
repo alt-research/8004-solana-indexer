@@ -3,6 +3,7 @@ import { decodeFeedbackId, decodeResponseId, decodeValidationId, decodeAgentId }
 import { clampFirst, clampSkip, MAX_FIRST } from '../utils/pagination.js';
 import { buildWhereClause } from '../utils/filters.js';
 import type { AgentRow, FeedbackRow, ResponseRow, ValidationRow } from '../dataloaders.js';
+import { config } from '../../../config.js';
 
 const ORDER_MAP_AGENT: Record<string, string> = {
   createdAt: 'created_at',
@@ -35,8 +36,14 @@ interface AggregatedStats {
   tags: string[];
 }
 
-const STATS_CACHE_TTL_MS = 5000;
-let statsCache: { at: number; value: AggregatedStats } | null = null;
+interface CachedAggregatedStats {
+  value: AggregatedStats;
+  expiresAt: number;
+}
+
+const STATS_CACHE_TTL_MS = config.graphqlStatsCacheTtlMs;
+const statsCacheByNetwork = new Map<string, CachedAggregatedStats>();
+const statsRefreshByNetwork = new Map<string, Promise<AggregatedStats>>();
 
 function resolveDirection(dir: string | undefined | null): 'ASC' | 'DESC' {
   return dir === 'asc' ? 'ASC' : 'DESC';
@@ -69,12 +76,7 @@ function assertCursorOrderCompatibility(after: string | undefined, orderCol: str
   }
 }
 
-async function loadAggregatedStats(ctx: GraphQLContext): Promise<AggregatedStats> {
-  const now = Date.now();
-  if (statsCache && (now - statsCache.at) < STATS_CACHE_TTL_MS) {
-    return statsCache.value;
-  }
-
+async function fetchAggregatedStats(ctx: GraphQLContext): Promise<AggregatedStats> {
   const { rows } = await ctx.pool.query<{
     total_agents: string;
     total_feedback: string;
@@ -98,15 +100,58 @@ async function loadAggregatedStats(ctx: GraphQLContext): Promise<AggregatedStats
        ), ARRAY[]::text[]) AS tags`
   );
 
-  const value: AggregatedStats = {
+  return {
     totalAgents: rows[0]?.total_agents ?? '0',
     totalFeedback: rows[0]?.total_feedback ?? '0',
     totalValidations: rows[0]?.total_validations ?? '0',
     tags: rows[0]?.tags ?? [],
   };
+}
 
-  statsCache = { at: now, value };
-  return value;
+function refreshAggregatedStats(
+  cacheKey: string,
+  ctx: GraphQLContext
+): Promise<AggregatedStats> {
+  const existing = statsRefreshByNetwork.get(cacheKey);
+  if (existing) return existing;
+
+  const pending = fetchAggregatedStats(ctx)
+    .then((value) => {
+      statsCacheByNetwork.set(cacheKey, {
+        value,
+        expiresAt: Date.now() + STATS_CACHE_TTL_MS,
+      });
+      return value;
+    })
+    .finally(() => {
+      statsRefreshByNetwork.delete(cacheKey);
+    });
+
+  statsRefreshByNetwork.set(cacheKey, pending);
+  return pending;
+}
+
+async function loadAggregatedStats(ctx: GraphQLContext): Promise<AggregatedStats> {
+  const cacheKey = ctx.networkMode;
+  const now = Date.now();
+  const cached = statsCacheByNetwork.get(cacheKey);
+
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
+  if (cached) {
+    // Serve stale result immediately and refresh asynchronously.
+    void refreshAggregatedStats(cacheKey, ctx).catch(() => undefined);
+    return cached.value;
+  }
+
+  return refreshAggregatedStats(cacheKey, ctx);
+}
+
+export function resetAggregatedStatsCacheForTests(): void {
+  statsCacheByNetwork.clear();
+  statsRefreshByNetwork.clear();
 }
 
 export const queryResolvers = {

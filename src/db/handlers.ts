@@ -22,6 +22,7 @@ import * as supabaseHandlers from "./supabase.js";
 import { digestUri, serializeValue } from "../indexer/uriDigest.js";
 import { compressForStorage } from "../utils/compression.js";
 import { stripNullBytes } from "../utils/sanitize.js";
+import { DEFAULT_PUBKEY, STANDARD_URI_FIELDS } from "../constants.js";
 
 const logger = createChildLogger("db-handlers");
 
@@ -41,45 +42,33 @@ type PrismaTransactionClient = Omit<PrismaClient, "$connect" | "$disconnect" | "
 // Union type for handlers that work with both PrismaClient and transaction client
 type PrismaClientOrTx = PrismaClient | PrismaTransactionClient;
 
-// Standard URI fields - never compressed for fast reads (parity with supabase.ts)
-// Uses "_uri:" prefix to avoid collision with user's on-chain metadata
-const STANDARD_URI_FIELDS = new Set([
-  "_uri:type",
-  "_uri:name",
-  "_uri:description",
-  "_uri:image",
-  "_uri:services",           // ERC-8004 standard: "services" not "endpoints"
-  "_uri:registrations",
-  "_uri:supported_trust",    // ERC-8004 standard: singular "supportedTrust"
-  "_uri:active",
-  "_uri:x402_support",
-  "_uri:skills",
-  "_uri:domains",
-  "_uri:_status",
-]);
-
-// Solana default pubkey (111...111) indicates wallet reset
-const DEFAULT_PUBKEY = "11111111111111111111111111111111";
-
 /**
  * Normalize hash: all-zero means "no hash" → NULL (parity with Supabase)
  */
 function normalizeHash(hash: Uint8Array | number[]): Uint8Array<ArrayBuffer> | null {
-  if (!hash || hash.every(b => b === 0)) {
-    return null;
-  }
+  if (!hash) return null;
   return Uint8Array.from(hash) as Uint8Array<ArrayBuffer>;
 }
 
 /**
  * Compare two hash values for semantic matching (seal_hash vs feedback_hash)
  */
+function isZeroHash(h: Uint8Array | Uint8Array<ArrayBuffer>): boolean {
+  for (let i = 0; i < h.length; i++) {
+    if (h[i] !== 0) return false;
+  }
+  return true;
+}
+
 function hashesMatch(a: Uint8Array | Uint8Array<ArrayBuffer> | null | undefined, b: Uint8Array | Uint8Array<ArrayBuffer> | null | undefined): boolean {
-  if (!a && !b) return true;
-  if (!a || !b) return false;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
+  // Treat null and all-zero as equivalent (handles old null data vs new preserved zeros)
+  const aEmpty = !a || isZeroHash(a);
+  const bEmpty = !b || isZeroHash(b);
+  if (aEmpty && bEmpty) return true;
+  if (aEmpty || bEmpty) return false;
+  if (a!.length !== b!.length) return false;
+  for (let i = 0; i < a!.length; i++) {
+    if (a![i] !== b![i]) return false;
   }
   return true;
 }
@@ -611,6 +600,10 @@ async function handleMetadataSetTx(
     where: { agentId_key: { agentId: assetId, key: data.key } },
     select: { immutable: true },
   });
+  if (existing?.immutable) {
+    logger.debug({ assetId, key: data.key }, "Skipping update: metadata is immutable");
+    return;
+  }
   await tx.agentMetadata.upsert({
     where: { agentId_key: { agentId: assetId, key: data.key } },
     create: {
@@ -624,7 +617,7 @@ async function handleMetadataSetTx(
     },
     update: {
       value: prefixedValue,
-      immutable: existing?.immutable || data.immutable,
+      immutable: data.immutable,
       txSignature: ctx.signature,
       slot: ctx.slot,
     },
@@ -649,11 +642,14 @@ async function handleMetadataSet(
   const cleanValue = stripNullBytes(data.value);
   const prefixedValue = Buffer.concat([Buffer.from([0x00]), cleanValue]);
 
-  // Fetch existing to check immutable state
   const existing = await prisma.agentMetadata.findUnique({
     where: { agentId_key: { agentId: assetId, key: data.key } },
     select: { immutable: true },
   });
+  if (existing?.immutable) {
+    logger.debug({ assetId, key: data.key }, "Skipping update: metadata is immutable");
+    return;
+  }
 
   await prisma.agentMetadata.upsert({
     where: {
@@ -673,7 +669,7 @@ async function handleMetadataSet(
     },
     update: {
       value: prefixedValue,
-      immutable: existing?.immutable || data.immutable, // Once true, stays true
+      immutable: data.immutable,
       txSignature: ctx.signature,
       slot: ctx.slot,
     },
@@ -810,6 +806,7 @@ async function handleNewFeedbackTx(
         responder: orphan.responder,
         responseUri: orphan.responseUri,
         responseHash: orphan.responseHash,
+        runningDigest: orphan.runningDigest,
         txSignature: orphan.txSignature,
         slot: orphan.slot,
         status: DEFAULT_STATUS,
@@ -880,6 +877,7 @@ async function handleNewFeedback(
         responder: orphan.responder,
         responseUri: orphan.responseUri,
         responseHash: orphan.responseHash,
+        runningDigest: orphan.runningDigest,
         txSignature: orphan.txSignature,
         slot: orphan.slot,
         status: DEFAULT_STATUS,
@@ -1068,6 +1066,7 @@ async function handleResponseAppendedTx(
         responder,
         responseUri: data.responseUri,
         responseHash: normalizeHash(data.responseHash),
+        runningDigest: data.newResponseDigest ? Uint8Array.from(data.newResponseDigest) as Uint8Array<ArrayBuffer> : null,
         txSignature: ctx.signature,
         slot: ctx.slot,
       },
@@ -1078,12 +1077,15 @@ async function handleResponseAppendedTx(
   }
 
   const eventSealHash = normalizeHash(data.sealHash);
-  if (!hashesMatch(eventSealHash, feedback.feedbackHash)) {
+  const sealMismatch = !hashesMatch(eventSealHash, feedback.feedbackHash);
+  if (sealMismatch) {
     logger.warn(
       { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
       "seal_hash mismatch: response sealHash does not match stored feedbackHash"
     );
   }
+
+  const responseStatus = sealMismatch ? "ORPHANED" as const : DEFAULT_STATUS;
 
   await tx.feedbackResponse.upsert({
     where: {
@@ -1103,7 +1105,7 @@ async function handleResponseAppendedTx(
       txSignature: ctx.signature,
       slot: ctx.slot,
       txIndex: ctx.txIndex ?? null,
-      status: DEFAULT_STATUS,
+      status: responseStatus,
     },
     update: {},
   });
@@ -1152,6 +1154,7 @@ async function handleResponseAppended(
         responder,
         responseUri: data.responseUri,
         responseHash: normalizeHash(data.responseHash),
+        runningDigest: data.newResponseDigest ? Uint8Array.from(data.newResponseDigest) as Uint8Array<ArrayBuffer> : null,
         txSignature: ctx.signature,
         slot: ctx.slot,
       },
@@ -1166,12 +1169,15 @@ async function handleResponseAppended(
   }
 
   const eventSealHash = normalizeHash(data.sealHash);
-  if (!hashesMatch(eventSealHash, feedback.feedbackHash)) {
+  const sealMismatch = !hashesMatch(eventSealHash, feedback.feedbackHash);
+  if (sealMismatch) {
     logger.warn(
       { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
       "seal_hash mismatch: response sealHash does not match stored feedbackHash"
     );
   }
+
+  const responseStatus = sealMismatch ? "ORPHANED" as const : DEFAULT_STATUS;
 
   await prisma.feedbackResponse.upsert({
     where: {
@@ -1191,7 +1197,7 @@ async function handleResponseAppended(
       txSignature: ctx.signature,
       slot: ctx.slot,
       txIndex: ctx.txIndex ?? null,
-      status: DEFAULT_STATUS,
+      status: responseStatus,
     },
     update: {},
   });
@@ -1299,7 +1305,7 @@ async function handleValidationRespondedTx(
       agentId: assetId,
       validator: data.validatorAddress.toBase58(),
       nonce: data.nonce,
-      requester: data.validatorAddress.toBase58(),
+      requester: "unknown",
       requestUri: null,
       requestHash: null,
       requestTxSignature: ctx.signature,
@@ -1333,7 +1339,6 @@ async function handleValidationResponded(
 ): Promise<void> {
   const assetId = data.asset.toBase58();
 
-  // Use UPSERT to handle case where request wasn't indexed (DB reset, late start, etc.)
   await prisma.validation.upsert({
     where: {
       agentId_validator_nonce: {
@@ -1346,13 +1351,11 @@ async function handleValidationResponded(
       agentId: assetId,
       validator: data.validatorAddress.toBase58(),
       nonce: data.nonce,
-      // Request fields unknown - set to empty/null
-      requester: data.validatorAddress.toBase58(), // Best guess: validator is requester
+      requester: "unknown",
       requestUri: null,
-      requestHash: null, // Unknown request
-      requestTxSignature: ctx.signature, // Use response tx as placeholder
+      requestHash: null,
+      requestTxSignature: ctx.signature,
       requestSlot: ctx.slot,
-      // Response fields
       response: data.response,
       responseUri: data.responseUri,
       responseHash: normalizeHash(data.responseHash),
@@ -1538,6 +1541,7 @@ async function storeUriMetadataLocal(
         key,
         value: storedValue,
         immutable: false,
+        slot: 0n,
       },
       update: {
         value: storedValue,

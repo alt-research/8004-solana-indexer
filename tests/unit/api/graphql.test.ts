@@ -1,0 +1,312 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { parse } from 'graphql';
+
+vi.mock('../../../src/logger.js', () => {
+  const mockLogger = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    fatal: vi.fn(),
+    child: vi.fn(() => mockLogger),
+  };
+  return {
+    createChildLogger: vi.fn(() => mockLogger),
+    logger: mockLogger,
+  };
+});
+
+import { analyzeQuery, calculateComplexity, countAliases, MAX_COMPLEXITY, MAX_ALIASES } from '../../../src/api/graphql/plugins/complexity.js';
+import { analyzeDepth, calculateDepth, MAX_DEPTH } from '../../../src/api/graphql/plugins/depth-limit.js';
+import { buildWhereClause } from '../../../src/api/graphql/utils/filters.js';
+import { clampFirst, clampSkip, encodeCursor, decodeCursor, MAX_FIRST, MAX_SKIP } from '../../../src/api/graphql/utils/pagination.js';
+import { scalarResolvers } from '../../../src/api/graphql/resolvers/scalars.js';
+import { queryResolvers, resetAggregatedStatsCacheForTests } from '../../../src/api/graphql/resolvers/query.js';
+
+describe('GraphQL Complexity Analysis', () => {
+  it('allows simple queries', () => {
+    const doc = parse('{ agents(first: 10) { id agentURI } }');
+    const result = analyzeQuery(doc);
+    expect(result.allowed).toBe(true);
+    expect(result.cost).toBeLessThan(MAX_COMPLEXITY);
+  });
+
+  it('rejects overly complex queries', () => {
+    const doc = parse(`{
+      a1: agents(first: 250) { id feedback(first: 250) { id responses { id } } }
+      a2: agents(first: 250) { id feedback(first: 250) { id responses { id } } }
+      a3: agents(first: 250) { id feedback(first: 250) { id responses { id } } }
+    }`);
+    const result = analyzeQuery(doc);
+    expect(result.allowed).toBe(false);
+  });
+
+  it('rejects queries with too many aliases', () => {
+    const fields = Array.from({ length: 12 }, (_, i) => `a${i}: agents(first: 1) { id }`).join('\n');
+    const doc = parse(`{ ${fields} }`);
+    const result = analyzeQuery(doc);
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain('aliases');
+  });
+
+  it('allows query with few aliases', () => {
+    const doc = parse('{ a1: agents(first: 5) { id } a2: agents(first: 5) { id } }');
+    const result = analyzeQuery(doc);
+    expect(result.allowed).toBe(true);
+  });
+
+  it('calculates complexity based on first argument', () => {
+    const doc1 = parse('{ agents(first: 1) { id } }');
+    const doc250 = parse('{ agents(first: 250) { id } }');
+    const cost1 = calculateComplexity(doc1);
+    const cost250 = calculateComplexity(doc250);
+    expect(cost250).toBeGreaterThan(cost1);
+  });
+
+  it('applies nested list multipliers to complexity', () => {
+    const nested = parse('{ agents(first: 10) { feedback(first: 10) { id } } }');
+    const flat = parse('{ agents(first: 10) { id } }');
+    expect(calculateComplexity(nested)).toBeGreaterThan(calculateComplexity(flat));
+  });
+});
+
+describe('GraphQL Depth Limit', () => {
+  it('allows shallow queries', () => {
+    const doc = parse('{ agents { id owner } }');
+    const result = analyzeDepth(doc);
+    expect(result.allowed).toBe(true);
+    expect(result.depth).toBeLessThanOrEqual(MAX_DEPTH);
+  });
+
+  it('rejects deeply nested queries', () => {
+    const doc = parse(`{
+      agents {
+        feedback {
+          agent {
+            feedback {
+              agent {
+                feedback { id }
+              }
+            }
+          }
+        }
+      }
+    }`);
+    const result = analyzeDepth(doc);
+    expect(result.allowed).toBe(false);
+    expect(result.depth).toBeGreaterThan(MAX_DEPTH);
+  });
+
+  it('calculates correct depth', () => {
+    const doc = parse('{ agents { id } }');
+    expect(calculateDepth(doc)).toBe(2);
+  });
+});
+
+describe('Filter Builder', () => {
+  it('builds empty filter with orphaned exclusion', () => {
+    const result = buildWhereClause('agent', null);
+    expect(result.sql).toContain("status != 'ORPHANED'");
+    expect(result.params).toHaveLength(0);
+  });
+
+  it('builds agent filter with owner', () => {
+    const result = buildWhereClause('agent', { owner: 'testOwner123' });
+    expect(result.sql).toContain('owner = $1');
+    expect(result.params).toEqual(['testOwner123']);
+    expect(result.sql).toContain("status != 'ORPHANED'");
+  });
+
+  it('builds filter with array values', () => {
+    const result = buildWhereClause('agent', { id_in: ['sol:abc', 'sol:def'] });
+    expect(result.sql).toContain('ANY($1::text[])');
+    expect(result.params[0]).toEqual(['abc', 'def']);
+  });
+
+  it('decodes agent ID in filter', () => {
+    const result = buildWhereClause('agent', { id: 'sol:myAssetPubkey' });
+    expect(result.sql).toContain('asset = $1');
+    expect(result.params).toEqual(['myAssetPubkey']);
+  });
+
+  it('decodes agent ID in feedback filter', () => {
+    const result = buildWhereClause('feedback', { agent: 'sol:myAssetPubkey' });
+    expect(result.sql).toContain('asset = $1');
+    expect(result.params).toEqual(['myAssetPubkey']);
+  });
+
+  it('handles boolean filters', () => {
+    const result = buildWhereClause('agent', { atomEnabled: true });
+    expect(result.sql).toContain('atom_enabled = $1');
+    expect(result.params).toEqual([true]);
+  });
+
+  it('handles timestamp comparison filters', () => {
+    const result = buildWhereClause('agent', { createdAt_gt: 1700000000 });
+    expect(result.sql).toContain('created_at > to_timestamp($1)');
+    expect(result.params).toEqual([1700000000]);
+  });
+
+  it('ignores unknown filter fields', () => {
+    const result = buildWhereClause('agent', { unknownField: 'value', owner: 'test' });
+    expect(result.sql).toContain('owner = $1');
+    expect(result.params).toHaveLength(1);
+  });
+
+  it('uses chain_status for validation entities', () => {
+    const result = buildWhereClause('validation', null);
+    expect(result.sql).toContain("chain_status != 'ORPHANED'");
+  });
+
+  it('handles multiple filters', () => {
+    const result = buildWhereClause('feedback', {
+      agent: 'sol:asset1',
+      tag1: 'uptime',
+      isRevoked: false,
+    });
+    expect(result.sql).toContain('asset = $1');
+    expect(result.sql).toContain('tag1 = $2');
+    expect(result.sql).toContain('is_revoked = $3');
+    expect(result.params).toEqual(['asset1', 'uptime', false]);
+  });
+
+  it('builds response feedback filter from feedback ID', () => {
+    const result = buildWhereClause('response', { feedback: 'sol:asset1:clientA:9' });
+    expect(result.sql).toContain('asset = $1');
+    expect(result.sql).toContain('client_address = $2');
+    expect(result.sql).toContain('feedback_index = $3::bigint');
+    expect(result.params).toEqual(['asset1', 'clientA', '9']);
+  });
+
+  it('maps validation status filter to response nullability', () => {
+    const pending = buildWhereClause('validation', { status: 'PENDING' });
+    const completed = buildWhereClause('validation', { status: 'COMPLETED' });
+    expect(pending.sql).toContain('response IS NULL');
+    expect(completed.sql).toContain('response IS NOT NULL');
+  });
+
+  it('caps oversized _in filter arrays', () => {
+    const ids = Array.from({ length: 300 }, (_, i) => `sol:id${i}`);
+    const result = buildWhereClause('agent', { id_in: ids });
+    expect((result.params[0] as string[]).length).toBe(250);
+  });
+});
+
+describe('Pagination Utilities', () => {
+  it('clamps first to MAX_FIRST', () => {
+    expect(clampFirst(1000)).toBe(MAX_FIRST);
+    expect(clampFirst(50)).toBe(50);
+    expect(clampFirst(undefined)).toBe(100);
+    expect(clampFirst(null)).toBe(100);
+    expect(clampFirst(-1)).toBe(100);
+    expect(clampFirst(0)).toBe(100);
+  });
+
+  it('clamps skip to MAX_SKIP', () => {
+    expect(clampSkip(10000)).toBe(MAX_SKIP);
+    expect(clampSkip(50)).toBe(50);
+    expect(clampSkip(undefined)).toBe(0);
+    expect(clampSkip(null)).toBe(0);
+    expect(clampSkip(-5)).toBe(0);
+  });
+
+  it('encodes and decodes cursor', () => {
+    const data = { created_at: '2025-01-01T00:00:00Z', asset: 'testAsset' };
+    const cursor = encodeCursor(data);
+    expect(typeof cursor).toBe('string');
+
+    const decoded = decodeCursor(cursor);
+    expect(decoded).toEqual(data);
+  });
+
+  it('returns null for invalid cursor', () => {
+    expect(decodeCursor('')).toBeNull();
+    expect(decodeCursor('not-base64-json')).toBeNull();
+    expect(decodeCursor(Buffer.from('{}').toString('base64'))).toBeNull();
+    expect(decodeCursor(Buffer.from('{"created_at": 123}').toString('base64'))).toBeNull();
+  });
+});
+
+describe('Scalar Resolvers', () => {
+  it('serializes BigInt as string', () => {
+    expect(scalarResolvers.BigInt.serialize(42n)).toBe('42');
+    expect(scalarResolvers.BigInt.serialize(123)).toBe('123');
+    expect(scalarResolvers.BigInt.serialize('999')).toBe('999');
+  });
+
+  it('parses BigInt from string', () => {
+    expect(scalarResolvers.BigInt.parseValue('42')).toBe(42n);
+    expect(scalarResolvers.BigInt.parseValue(42)).toBe(42n);
+  });
+
+  it('serializes BigDecimal as string', () => {
+    expect(scalarResolvers.BigDecimal.serialize('99.77')).toBe('99.77');
+    expect(scalarResolvers.BigDecimal.serialize(3.14)).toBe('3.14');
+  });
+
+  it('serializes Bytes from Buffer', () => {
+    const buf = Buffer.from([0xab, 0xcd]);
+    expect(scalarResolvers.Bytes.serialize(buf)).toBe('abcd');
+  });
+
+  it('passes through hex string for Bytes', () => {
+    expect(scalarResolvers.Bytes.serialize('deadbeef')).toBe('deadbeef');
+  });
+});
+
+describe('Query Aggregated Stats Cache', () => {
+  beforeEach(() => {
+    resetAggregatedStatsCacheForTests();
+  });
+
+  it('caches globalStats results within TTL', async () => {
+    const query = vi.fn().mockResolvedValue({
+      rows: [{
+        total_agents: '10',
+        total_feedback: '20',
+        total_validations: '30',
+        tags: ['ai'],
+      }],
+    });
+
+    const ctx = {
+      pool: { query },
+      prisma: null,
+      loaders: {},
+      networkMode: 'devnet',
+    } as any;
+
+    const first = await queryResolvers.Query.globalStats({}, { id: 'stats' }, ctx);
+    const second = await queryResolvers.Query.globalStats({}, { id: 'stats' }, ctx);
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(first.totalAgents).toBe('10');
+    expect(second.totalAgents).toBe('10');
+    expect(second.tags).toEqual(['ai']);
+  });
+
+  it('deduplicates concurrent globalStats refreshes', async () => {
+    const query = vi.fn().mockResolvedValue({
+      rows: [{
+        total_agents: '1',
+        total_feedback: '2',
+        total_validations: '3',
+        tags: ['x'],
+      }],
+    });
+
+    const ctx = {
+      pool: { query },
+      prisma: null,
+      loaders: {},
+      networkMode: 'mainnet',
+    } as any;
+
+    await Promise.all([
+      queryResolvers.Query.globalStats({}, { id: 'a' }, ctx),
+      queryResolvers.Query.protocol({}, { id: 'b' }, ctx),
+    ]);
+
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+});

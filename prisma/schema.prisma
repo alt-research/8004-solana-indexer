@@ -153,16 +153,17 @@ model Revocation {
 }
 
 model OrphanResponse {
-  id            String   @id @default(uuid())
-  agentId       String
-  client        String
-  feedbackIndex BigInt
-  responder     String
-  responseUri   String
-  responseHash  Bytes?
-  createdAt     DateTime @default(now())
-  txSignature   String?
-  slot          BigInt?
+  id             String   @id @default(uuid())
+  agentId        String
+  client         String
+  feedbackIndex  BigInt
+  responder      String
+  responseUri    String
+  responseHash   Bytes?
+  runningDigest  Bytes?
+  createdAt      DateTime @default(now())
+  txSignature    String?
+  slot           BigInt?
 
   @@unique([agentId, client, feedbackIndex, responder, txSignature])
   @@index([agentId])
@@ -255,7 +256,7 @@ model HashChainCheckpoint {
   id         Int      @id @default(autoincrement())
   agentId    String
   chainType  String
-  eventCount Int
+  eventCount BigInt
   digest     String
   createdAt  DateTime @default(now())
 

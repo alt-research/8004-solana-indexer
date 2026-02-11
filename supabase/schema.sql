@@ -19,6 +19,9 @@ DROP TABLE IF EXISTS metadata CASCADE;
 DROP TABLE IF EXISTS agents CASCADE;
 DROP TABLE IF EXISTS collections CASCADE;
 
+-- Extensions
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
 -- =============================================
 -- COLLECTIONS
 -- =============================================
@@ -85,6 +88,10 @@ CREATE INDEX idx_agents_owner ON agents(owner);
 CREATE INDEX idx_agents_collection ON agents(collection);
 CREATE INDEX idx_agents_wallet ON agents(agent_wallet);
 CREATE INDEX idx_agents_status ON agents(status) WHERE status = 'PENDING';
+CREATE INDEX idx_agents_graphql_created_asset ON agents(created_at DESC, asset DESC) WHERE status != 'ORPHANED';
+CREATE INDEX idx_agents_graphql_nft_name_trgm ON agents USING gin (nft_name gin_trgm_ops) WHERE status != 'ORPHANED';
+CREATE INDEX idx_agents_graphql_asset_trgm ON agents USING gin (asset gin_trgm_ops) WHERE status != 'ORPHANED';
+CREATE INDEX idx_agents_graphql_owner_trgm ON agents USING gin (owner gin_trgm_ops) WHERE status != 'ORPHANED';
 
 -- LEADERBOARD: Partial index (only top tiers = small, fast)
 CREATE INDEX idx_agents_leaderboard_top ON agents(sort_key DESC)
@@ -120,6 +127,10 @@ CREATE TABLE metadata (
 CREATE INDEX idx_metadata_asset ON metadata(asset);
 CREATE INDEX idx_metadata_key ON metadata(key);
 CREATE INDEX idx_metadata_status ON metadata(status) WHERE status = 'PENDING';
+CREATE INDEX idx_metadata_graphql_asset_key ON metadata(asset, key) WHERE status != 'ORPHANED';
+CREATE INDEX idx_metadata_graphql_uri_asset_updated
+ON metadata(asset, updated_at DESC)
+WHERE status != 'ORPHANED' AND key LIKE '\_uri:%' ESCAPE '\';
 
 -- =============================================
 -- FEEDBACKS (immutable log - raw data only)
@@ -138,6 +149,7 @@ CREATE TABLE feedbacks (
   endpoint TEXT,
   feedback_uri TEXT,
   feedback_hash TEXT,
+  running_digest BYTEA,
   is_revoked BOOLEAN DEFAULT FALSE,
   revoked_at TIMESTAMPTZ,
   block_slot BIGINT NOT NULL,
@@ -156,6 +168,8 @@ CREATE INDEX idx_feedbacks_tag1 ON feedbacks(tag1) WHERE tag1 IS NOT NULL;
 CREATE INDEX idx_feedbacks_endpoint ON feedbacks(endpoint) WHERE endpoint IS NOT NULL;
 CREATE INDEX idx_feedbacks_not_revoked ON feedbacks(asset, created_at DESC) WHERE NOT is_revoked;
 CREATE INDEX idx_feedbacks_status ON feedbacks(status) WHERE status = 'PENDING';
+CREATE INDEX idx_feedbacks_graphql_created_asset ON feedbacks(created_at DESC, asset DESC) WHERE status != 'ORPHANED';
+CREATE INDEX idx_feedbacks_graphql_value_asset ON feedbacks(value DESC, asset DESC) WHERE status != 'ORPHANED';
 
 -- =============================================
 -- FEEDBACK_RESPONSES
@@ -168,6 +182,7 @@ CREATE TABLE feedback_responses (
   responder TEXT NOT NULL,
   response_uri TEXT,
   response_hash TEXT,
+  running_digest BYTEA,
   block_slot BIGINT NOT NULL,
   tx_index INTEGER,
   tx_signature TEXT NOT NULL,
@@ -183,6 +198,7 @@ CREATE TABLE feedback_responses (
 CREATE INDEX idx_responses_asset ON feedback_responses(asset);
 CREATE INDEX idx_responses_lookup ON feedback_responses(asset, client_address, feedback_index);
 CREATE INDEX idx_responses_status ON feedback_responses(status) WHERE status = 'PENDING';
+CREATE INDEX idx_responses_graphql_created_id ON feedback_responses(created_at DESC, id DESC) WHERE status != 'ORPHANED';
 
 -- =============================================
 -- VALIDATIONS
@@ -217,6 +233,7 @@ CREATE INDEX idx_validations_chain_status ON validations(chain_status) WHERE cha
 CREATE INDEX idx_validations_status ON validations(status);
 CREATE INDEX idx_validations_pending ON validations(validator_address, created_at DESC)
 WHERE status = 'PENDING';
+CREATE INDEX idx_validations_graphql_created_id ON validations(created_at DESC, id DESC) WHERE chain_status != 'ORPHANED';
 
 -- =============================================
 -- ATOM_CONFIG (singleton - ATOM Engine config)

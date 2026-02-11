@@ -1,0 +1,292 @@
+scalar BigInt
+scalar BigDecimal
+scalar Bytes
+
+enum AgentOrderBy {
+  createdAt
+  updatedAt
+  totalFeedback
+  qualityScore
+  trustTier
+}
+
+enum FeedbackOrderBy {
+  createdAt
+  value
+  feedbackIndex
+}
+
+enum FeedbackResponseOrderBy {
+  createdAt
+}
+
+enum OrderDirection {
+  asc
+  desc
+}
+
+enum ValidationStatus {
+  PENDING
+  COMPLETED
+  EXPIRED
+}
+
+enum URIType {
+  IPFS
+  HTTP
+  ARWEAVE
+}
+
+input AgentFilter {
+  id: ID
+  id_in: [ID!]
+  owner: String
+  owner_in: [String!]
+  agentWallet: String
+  totalFeedback_gt: BigInt
+  totalFeedback_gte: BigInt
+  createdAt_gt: BigInt
+  createdAt_lt: BigInt
+  collection: String
+  atomEnabled: Boolean
+  trustTier_gte: Int
+}
+
+input FeedbackFilter {
+  agent: ID
+  clientAddress: String
+  tag1: String
+  tag2: String
+  endpoint: String
+  isRevoked: Boolean
+  createdAt_gt: BigInt
+  createdAt_lt: BigInt
+}
+
+input FeedbackResponseFilter {
+  feedback: ID
+  responder: String
+  createdAt_gt: BigInt
+  createdAt_lt: BigInt
+}
+
+input ValidationFilter {
+  agent: ID
+  validatorAddress: String
+  status: ValidationStatus
+}
+
+input AgentMetadataFilter {
+  agent: ID
+  key: String
+}
+
+input AgentRegistrationFileFilter {
+  agent: ID
+}
+
+type Agent {
+  id: ID!
+  chainId: Int!
+  agentId: BigInt!
+  agentURI: String!
+  agentURIType: URIType!
+  owner: String!
+  agentWallet: String
+  operators: [String!]!
+  totalFeedback: BigInt!
+  lastActivity: BigInt
+  createdAt: BigInt!
+  updatedAt: BigInt!
+  registrationFile: AgentRegistrationFile
+  feedback(
+    first: Int = 100
+    skip: Int = 0
+    orderBy: FeedbackOrderBy
+    orderDirection: OrderDirection
+  ): [Feedback!]!
+  validations(first: Int = 100, skip: Int = 0): [Validation!]!
+  metadata: [AgentMetadata!]!
+  stats: AgentStats
+  solana: SolanaAgentExtension
+}
+
+type Feedback {
+  id: ID!
+  agent: Agent!
+  clientAddress: String!
+  feedbackIndex: BigInt!
+  value: BigDecimal!
+  tag1: String!
+  tag2: String!
+  endpoint: String
+  feedbackURI: String
+  feedbackURIType: URIType
+  feedbackHash: Bytes
+  isRevoked: Boolean!
+  createdAt: BigInt!
+  revokedAt: BigInt
+  responses(first: Int = 100, skip: Int = 0): [FeedbackResponse!]!
+  solana: SolanaFeedbackExtension
+}
+
+type FeedbackResponse {
+  id: ID!
+  feedback: Feedback!
+  responder: String!
+  responseUri: String!
+  responseHash: Bytes
+  createdAt: BigInt!
+  solana: SolanaResponseExtension
+}
+
+type Validation {
+  id: ID!
+  agent: Agent!
+  validatorAddress: String!
+  requestUri: String
+  requestHash: Bytes
+  response: Int
+  responseUri: String
+  responseHash: Bytes
+  tag: String
+  status: ValidationStatus!
+  createdAt: BigInt!
+  updatedAt: BigInt
+}
+
+type AgentMetadata {
+  id: ID!
+  agent: Agent!
+  key: String!
+  value: String!
+  updatedAt: BigInt
+}
+
+type AgentStats {
+  id: ID!
+  totalFeedback: BigInt!
+  averageFeedbackValue: BigDecimal
+  totalValidations: BigInt!
+  completedValidations: BigInt!
+  averageValidationScore: BigDecimal
+  lastActivity: BigInt
+}
+
+type Protocol {
+  id: ID!
+  totalAgents: BigInt!
+  totalFeedback: BigInt!
+  totalValidations: BigInt!
+  tags: [String!]!
+}
+
+type GlobalStats {
+  id: ID!
+  totalAgents: BigInt!
+  totalFeedback: BigInt!
+  totalValidations: BigInt!
+  totalProtocols: BigInt!
+  tags: [String!]!
+}
+
+type AgentRegistrationFile {
+  name: String
+  description: String
+  image: String
+  active: Boolean
+  x402Support: Boolean
+  mcpEndpoint: String
+  mcpTools: [String!]
+  a2aEndpoint: String
+  a2aSkills: [String!]
+  oasfSkills: [String!]
+  oasfDomains: [String!]
+  hasOASF: Boolean
+  supportedTrusts: [Int!]
+}
+
+type SolanaAgentExtension {
+  assetPubkey: String!
+  collection: String!
+  atomEnabled: Boolean!
+  trustTier: Int
+  qualityScore: Int
+  confidence: Int
+  riskScore: Int
+  diversityRatio: Int
+  verificationStatus: String
+  feedbackDigest: String
+  responseDigest: String
+  revokeDigest: String
+}
+
+type SolanaFeedbackExtension {
+  valueRaw: BigInt!
+  valueDecimals: Int!
+  score: Int
+  runningDigest: String
+  verificationStatus: String
+  txSignature: String
+  blockSlot: BigInt
+}
+
+type SolanaResponseExtension {
+  runningDigest: String
+  responseCount: BigInt
+  verificationStatus: String
+  txSignature: String
+  blockSlot: BigInt
+}
+
+type Query {
+  agent(id: ID!): Agent
+  agents(
+    first: Int = 100
+    skip: Int = 0
+    after: String
+    where: AgentFilter
+    orderBy: AgentOrderBy
+    orderDirection: OrderDirection
+  ): [Agent!]!
+  feedback(id: ID!): Feedback
+  feedbacks(
+    first: Int = 100
+    skip: Int = 0
+    after: String
+    where: FeedbackFilter
+    orderBy: FeedbackOrderBy
+    orderDirection: OrderDirection
+  ): [Feedback!]!
+  feedbackResponse(id: ID!): FeedbackResponse
+  feedbackResponses(
+    first: Int = 100
+    skip: Int = 0
+    after: String
+    where: FeedbackResponseFilter
+    orderBy: FeedbackResponseOrderBy
+    orderDirection: OrderDirection
+  ): [FeedbackResponse!]!
+  validation(id: ID!): Validation
+  validations(
+    first: Int = 100
+    skip: Int = 0
+    after: String
+    where: ValidationFilter
+  ): [Validation!]!
+  agentMetadatas(
+    first: Int = 100
+    skip: Int = 0
+    where: AgentMetadataFilter
+  ): [AgentMetadata!]!
+  agentStats(id: ID!): AgentStats
+  protocol(id: ID!): Protocol
+  protocols(first: Int = 10, skip: Int = 0): [Protocol!]!
+  globalStats(id: ID!): GlobalStats
+  agentSearch(query: String!, first: Int = 20): [Agent!]!
+  agentRegistrationFiles(
+    first: Int = 100
+    skip: Int = 0
+    where: AgentRegistrationFileFilter
+  ): [AgentRegistrationFile!]!
+}

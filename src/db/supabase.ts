@@ -23,6 +23,7 @@ import {
 } from "../parser/types.js";
 import { createChildLogger } from "../logger.js";
 import { config, ChainStatus } from "../config.js";
+import { DEFAULT_PUBKEY } from "../constants.js";
 import type { PoolClient } from "pg";
 
 const logger = createChildLogger("supabase-handlers");
@@ -86,6 +87,16 @@ let eventStats = {
   errors: 0,
   lastLogTime: Date.now(),
 };
+
+const ZERO_HASH_HEX = "0".repeat(64);
+
+function hashesMatchHex(stored: string | null, event: string | null): boolean {
+  const sEmpty = !stored || stored === ZERO_HASH_HEX;
+  const eEmpty = !event || event === ZERO_HASH_HEX;
+  if (sEmpty && eEmpty) return true;
+  if (sEmpty || eEmpty) return false;
+  return stored === event;
+}
 
 function logStatsIfNeeded(): void {
   const now = Date.now();
@@ -529,8 +540,7 @@ async function handleNewFeedbackTx(
   const clientAddress = data.clientAddress.toBase58();
   const id = `${assetId}:${clientAddress}:${data.feedbackIndex}`;
   // SEAL v1: sealHash is computed on-chain, stored in feedback_hash column
-  const isAllZeroHash = data.sealHash && data.sealHash.every(b => b === 0);
-  const feedbackHash = (data.sealHash && !isAllZeroHash)
+  const feedbackHash = data.sealHash
     ? Buffer.from(data.sealHash).toString("hex")
     : null;
   const runningDigest = data.newFeedbackDigest
@@ -618,10 +628,10 @@ async function handleFeedbackRevokedTx(
     );
   } else {
     const storedHash = feedbackCheck.rows[0].feedback_hash;
-    const eventHash = (data.sealHash && !data.sealHash.every(b => b === 0))
+    const eventHash = data.sealHash
       ? Buffer.from(data.sealHash).toString("hex")
       : null;
-    if (storedHash !== eventHash) {
+    if (!hashesMatchHex(storedHash, eventHash)) {
       logger.warn(
         { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
         "seal_hash mismatch: revocation sealHash does not match stored feedbackHash"
@@ -641,7 +651,7 @@ async function handleFeedbackRevokedTx(
   const revokeDigest = data.newRevokeDigest
     ? Buffer.from(data.newRevokeDigest)
     : null;
-  const revokeSealHash = (data.sealHash && !data.sealHash.every(b => b === 0))
+  const revokeSealHash = data.sealHash
     ? Buffer.from(data.sealHash).toString("hex")
     : null;
   const revokeId = `${assetId}:${clientAddress}:${data.feedbackIndex}`;
@@ -702,8 +712,7 @@ async function handleResponseAppendedTx(
     [assetId, clientAddress, data.feedbackIndex.toString()]
   );
 
-  const isAllZeroHash = data.responseHash && data.responseHash.every(b => b === 0);
-  const responseHash = (data.responseHash && !isAllZeroHash)
+  const responseHash = data.responseHash
     ? Buffer.from(data.responseHash).toString("hex")
     : null;
   const responseRunningDigest = data.newResponseDigest
@@ -727,15 +736,17 @@ async function handleResponseAppendedTx(
 
   // Validate seal_hash matches stored feedback_hash
   const storedHash = feedbackCheck.rows[0].feedback_hash;
-  const eventHash = (data.sealHash && !data.sealHash.every(b => b === 0))
+  const eventHash = data.sealHash
     ? Buffer.from(data.sealHash).toString("hex")
     : null;
-  if (storedHash !== eventHash) {
+  const sealMismatch = !hashesMatchHex(storedHash, eventHash);
+  if (sealMismatch) {
     logger.warn(
       { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
       "seal_hash mismatch: response sealHash does not match stored feedbackHash"
     );
   }
+  const responseStatus = sealMismatch ? "ORPHANED" : DEFAULT_STATUS;
 
   await client.query(
     `INSERT INTO feedback_responses (id, asset, client_address, feedback_index, responder, response_uri, response_hash, running_digest, block_slot, tx_index, tx_signature, created_at, status)
@@ -743,7 +754,7 @@ async function handleResponseAppendedTx(
      ON CONFLICT (id) DO NOTHING`,
     [id, assetId, clientAddress, data.feedbackIndex.toString(), responder, data.responseUri || null,
      responseHash, responseRunningDigest,
-     ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString(), DEFAULT_STATUS]
+     ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString(), responseStatus]
   );
   logger.info({ assetId, feedbackIndex: data.feedbackIndex.toString(), responder }, "Response appended");
 }
@@ -896,9 +907,6 @@ async function handleUriUpdated(
   }
 }
 
-// Solana default pubkey (111...111) indicates wallet reset
-const DEFAULT_PUBKEY = "11111111111111111111111111111111";
-
 async function handleWalletUpdated(
   data: WalletUpdated,
   ctx: EventContext
@@ -1005,9 +1013,7 @@ async function handleNewFeedback(
   const id = `${assetId}:${clientAddress}:${data.feedbackIndex}`;
 
   try {
-    // SEAL v1: sealHash is computed on-chain, stored in feedback_hash column
-    const isAllZeroHash = data.sealHash && data.sealHash.every(b => b === 0);
-    const feedbackHash = (data.sealHash && !isAllZeroHash)
+    const feedbackHash = data.sealHash
       ? Buffer.from(data.sealHash).toString("hex")
       : null;
 
@@ -1104,10 +1110,10 @@ async function handleFeedbackRevoked(
       );
     } else {
       const storedHash = feedbackCheck.rows[0].feedback_hash;
-      const eventHash = (data.sealHash && !data.sealHash.every(b => b === 0))
+      const eventHash = data.sealHash
         ? Buffer.from(data.sealHash).toString("hex")
         : null;
-      if (storedHash !== eventHash) {
+      if (!hashesMatchHex(storedHash, eventHash)) {
         logger.warn(
           { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
           "seal_hash mismatch: revocation sealHash does not match stored feedbackHash"
@@ -1127,7 +1133,7 @@ async function handleFeedbackRevoked(
     const revokeDigest = data.newRevokeDigest
       ? Buffer.from(data.newRevokeDigest)
       : null;
-    const revokeSealHash = (data.sealHash && !data.sealHash.every(b => b === 0))
+    const revokeSealHash = data.sealHash
       ? Buffer.from(data.sealHash).toString("hex")
       : null;
     await db.query(
@@ -1195,8 +1201,7 @@ async function handleResponseAppended(
       [assetId, clientAddress, data.feedbackIndex.toString()]
     );
 
-    const isAllZeroHash = data.responseHash && data.responseHash.every(b => b === 0);
-    const responseHash = (data.responseHash && !isAllZeroHash)
+    const responseHash = data.responseHash
       ? Buffer.from(data.responseHash).toString("hex")
       : null;
     const responseRunningDigest = data.newResponseDigest
@@ -1220,15 +1225,17 @@ async function handleResponseAppended(
 
     // Validate seal_hash matches stored feedback_hash
     const storedHash = feedbackCheck.rows[0].feedback_hash;
-    const eventHash = (data.sealHash && !data.sealHash.every(b => b === 0))
+    const eventHash = data.sealHash
       ? Buffer.from(data.sealHash).toString("hex")
       : null;
-    if (storedHash !== eventHash) {
+    const sealMismatch = !hashesMatchHex(storedHash, eventHash);
+    if (sealMismatch) {
       logger.warn(
         { assetId, client: clientAddress, feedbackIndex: data.feedbackIndex.toString() },
         "seal_hash mismatch: response sealHash does not match stored feedbackHash"
       );
     }
+    const responseStatus = sealMismatch ? "ORPHANED" : DEFAULT_STATUS;
 
     await db.query(
       `INSERT INTO feedback_responses (id, asset, client_address, feedback_index, responder, response_uri, response_hash, running_digest, block_slot, tx_index, tx_signature, created_at, status)
@@ -1236,7 +1243,7 @@ async function handleResponseAppended(
        ON CONFLICT (id) DO NOTHING`,
       [id, assetId, clientAddress, data.feedbackIndex.toString(), responder, data.responseUri || null,
        responseHash, responseRunningDigest,
-       ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString(), DEFAULT_STATUS]
+       ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString(), responseStatus]
     );
     logger.info({ assetId, feedbackIndex: data.feedbackIndex.toString(), responder }, "Response appended");
   } catch (error: any) {
@@ -1361,7 +1368,8 @@ export async function saveIndexerState(signature: string, slot: bigint): Promise
        ON CONFLICT (id) DO UPDATE SET
          last_signature = EXCLUDED.last_signature,
          last_slot = EXCLUDED.last_slot,
-         updated_at = NOW()`,
+         updated_at = NOW()
+       WHERE indexer_state.last_slot <= EXCLUDED.last_slot`,
       [signature, slot.toString()]
     );
   } catch (error: any) {
@@ -1413,8 +1421,8 @@ async function digestAndStoreUriMetadata(assetId: string, uri: string): Promise<
       return;
     }
   } catch (error: any) {
-    logger.warn({ assetId, error: error.message }, "Failed to check agent URI freshness");
-    // Continue anyway - better to write potentially stale data than lose it entirely
+    logger.warn({ assetId, error: error.message }, "Failed to check agent URI freshness, aborting to prevent stale overwrite");
+    return;
   }
 
   // Purge old URI-derived metadata before storing new ones
@@ -1486,22 +1494,8 @@ async function digestAndStoreUriMetadata(assetId: string, uri: string): Promise<
   logger.info({ assetId, uri, fieldCount: Object.keys(result.fields).length }, "URI metadata indexed");
 }
 
-// Standard URI fields that should NOT be compressed (frequently read)
-// Uses "_uri:" prefix to avoid collision with user's on-chain metadata
-const STANDARD_URI_FIELDS = new Set([
-  "_uri:type",
-  "_uri:name",
-  "_uri:description",
-  "_uri:image",
-  "_uri:endpoints",
-  "_uri:registrations",
-  "_uri:supported_trusts",
-  "_uri:active",
-  "_uri:x402_support",
-  "_uri:skills",
-  "_uri:domains",
-  "_uri:_status",
-]);
+// Re-export from shared constants for URI metadata storage
+import { STANDARD_URI_FIELDS } from "../constants.js";
 
 /**
  * Store a single URI metadata entry

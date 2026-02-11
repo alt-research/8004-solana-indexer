@@ -80,19 +80,45 @@ async function main() {
   const pool = config.dbMode === "supabase" ? getPool() : null;
   const processor = new Processor(prisma, pool);
 
-  if (!pool) {
+  const restEnabled = config.apiMode !== "graphql";
+  const graphqlEnabled = config.apiMode !== "rest" && config.enableGraphql;
+  const canServeRest = restEnabled && !!prisma;
+  const canServeGraphql = graphqlEnabled && !!pool;
+
+  if (restEnabled && !prisma) {
     logger.fatal(
-      { dbMode: config.dbMode },
+      { apiMode: config.apiMode, dbMode: config.dbMode },
+      "REST mode requires DB_MODE=local (Prisma)"
+    );
+    process.exit(1);
+  }
+
+  if (graphqlEnabled && !pool) {
+    logger.fatal(
+      { apiMode: config.apiMode, dbMode: config.dbMode },
       "GraphQL mode requires DB_MODE=supabase (PostgreSQL pool)"
     );
     process.exit(1);
   }
 
-  // Start GraphQL API server before processor (available during backfill)
+  // Start API server before processor (available during backfill)
   let apiServer: Server | null = null;
-  const apiPort = parseInt(process.env.API_PORT || "3001");
-  apiServer = await startApiServer({ prisma, pool, port: apiPort });
-  logger.info({ apiPort }, `GraphQL endpoint: http://localhost:${apiPort}/graphql`);
+  if (canServeRest || canServeGraphql) {
+    const apiPort = parseInt(process.env.API_PORT || "3001");
+    apiServer = await startApiServer({ prisma, pool, port: apiPort });
+    logger.info(
+      {
+        apiPort,
+        apiMode: config.apiMode,
+        restEnabled: canServeRest,
+        graphqlEnabled: canServeGraphql,
+      },
+      "API available"
+    );
+    if (canServeGraphql) {
+      logger.info({ apiPort }, `GraphQL endpoint: http://localhost:${apiPort}/v2/graphql`);
+    }
+  }
 
   await processor.start();
 
@@ -123,7 +149,9 @@ async function main() {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 
   logger.info("8004 Solana Indexer is running");
-  logger.info("API available via Supabase GraphQL: " + (config.supabaseUrl || "N/A"));
+  if (canServeGraphql) {
+    logger.info("API available via GraphQL endpoint");
+  }
 }
 
 main().catch((error) => {

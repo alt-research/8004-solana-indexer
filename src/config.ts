@@ -3,10 +3,12 @@ import { PROGRAM_ID } from "8004-solana";
 
 export type IndexerMode = "auto" | "polling" | "websocket";
 export type DbMode = "local" | "supabase";
+export type ApiMode = "graphql" | "rest" | "hybrid";
 export type MetadataIndexMode = "off" | "normal" | "full";
 export type ChainStatus = "PENDING" | "FINALIZED" | "ORPHANED";
 
 const VALID_DB_MODES: DbMode[] = ["local", "supabase"];
+const VALID_API_MODES: ApiMode[] = ["graphql", "rest", "hybrid"];
 const VALID_INDEXER_MODES: IndexerMode[] = ["auto", "polling", "websocket"];
 const VALID_METADATA_MODES: MetadataIndexMode[] = ["off", "normal", "full"];
 
@@ -26,12 +28,45 @@ function parseIndexerMode(value: string | undefined): IndexerMode {
   return mode as IndexerMode;
 }
 
+function parseApiMode(value: string | undefined): ApiMode {
+  const mode = (value || "graphql").toLowerCase();
+  if (!VALID_API_MODES.includes(mode as ApiMode)) {
+    throw new Error(`Invalid API_MODE '${mode}'. Must be one of: ${VALID_API_MODES.join(", ")}`);
+  }
+  return mode as ApiMode;
+}
+
 function parseMetadataMode(value: string | undefined): MetadataIndexMode {
   const mode = value || "normal";
   if (!VALID_METADATA_MODES.includes(mode as MetadataIndexMode)) {
     throw new Error(`Invalid INDEX_METADATA '${mode}'. Must be one of: ${VALID_METADATA_MODES.join(", ")}`);
   }
   return mode as MetadataIndexMode;
+}
+
+function parseBoolean(value: string | undefined, fallback: boolean): boolean {
+  if (!value || value.trim() === "") {
+    return fallback;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return fallback;
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  if (!value || value.trim() === "") {
+    return fallback;
+  }
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
 }
 
 /**
@@ -64,6 +99,13 @@ export const config = {
 
   // Program ID from SDK (source of truth)
   programId: PROGRAM_ID.toBase58(),
+
+  // API mode: graphql (default) | rest | hybrid
+  apiMode: parseApiMode(process.env.API_MODE),
+  // GraphQL requires Supabase pool and is enabled by default
+  enableGraphql: parseBoolean(process.env.ENABLE_GRAPHQL, true),
+  // Cache TTL for expensive GraphQL aggregated stats queries
+  graphqlStatsCacheTtlMs: parsePositiveInt(process.env.GRAPHQL_STATS_CACHE_TTL_MS, 60000),
 
   // Indexer mode: "auto" | "polling" | "websocket"
   // auto = tries WebSocket first, falls back to polling if unavailable
@@ -104,6 +146,10 @@ export const config = {
   verifySafetyMarginSlots: parseInt(process.env.VERIFY_SAFETY_MARGIN_SLOTS || "32", 10),
   // Max retries for existence checks before orphaning
   verifyMaxRetries: parseInt(process.env.VERIFY_MAX_RETRIES || "3", 10),
+  // Run ORPHANED recovery every N verification cycles (0 = disabled)
+  verifyRecoveryCycles: parseInt(process.env.VERIFY_RECOVERY_CYCLES || "10", 10),
+  // Max ORPHANED records to re-check per recovery run
+  verifyRecoveryBatchSize: parseInt(process.env.VERIFY_RECOVERY_BATCH_SIZE || "50", 10),
 } as const;
 
 export function validateConfig(): void {
@@ -132,5 +178,17 @@ export function validateConfig(): void {
 
   if (config.verifySafetyMarginSlots < 0 || config.verifySafetyMarginSlots > 150) {
     throw new Error("VERIFY_SAFETY_MARGIN_SLOTS must be between 0 and 150");
+  }
+
+  if (config.verifyRecoveryCycles < 0 || config.verifyRecoveryCycles > 1000) {
+    throw new Error("VERIFY_RECOVERY_CYCLES must be between 0 and 1000");
+  }
+
+  if (config.verifyRecoveryBatchSize < 1 || config.verifyRecoveryBatchSize > 1000) {
+    throw new Error("VERIFY_RECOVERY_BATCH_SIZE must be between 1 and 1000");
+  }
+
+  if (config.graphqlStatsCacheTtlMs < 1000 || config.graphqlStatsCacheTtlMs > 3600000) {
+    throw new Error("GRAPHQL_STATS_CACHE_TTL_MS must be between 1000 and 3600000");
   }
 }

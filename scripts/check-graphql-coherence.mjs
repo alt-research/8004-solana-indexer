@@ -33,7 +33,7 @@ function stats(values) {
 }
 
 async function gql(url, query, variables = {}) {
-  const res = await fetch(`${url}/graphql`, {
+  const res = await fetch(`${url}/v2/graphql`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ query, variables }),

@@ -44,8 +44,8 @@ describe('API Server (GraphQL-only)', () => {
     expect(body).toEqual({ status: 'ok' });
   });
 
-  it('serves /graphql endpoint', async () => {
-    const res = await fetch(`${baseUrl}/graphql`, {
+  it('serves /v2/graphql endpoint', async () => {
+    const res = await fetch(`${baseUrl}/v2/graphql`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ query: '{ stats { totalAgents } }' }),
@@ -58,12 +58,12 @@ describe('API Server (GraphQL-only)', () => {
 
   it('does not expose REST routes', async () => {
     const res = await fetch(`${baseUrl}/rest/v1/agents`);
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(410);
   });
 
   it('throws when pool is missing', () => {
     expect(() => createApiServer({ pool: null as any })).toThrow(
-      'GraphQL API requires Supabase PostgreSQL pool (DB_MODE=supabase)'
+      'GraphQL mode requires Supabase PostgreSQL pool (DB_MODE=supabase)'
     );
   });
 });

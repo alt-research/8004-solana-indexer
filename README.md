@@ -1,13 +1,18 @@
 # 8004 Solana Indexer
 
-GraphQL-only Solana indexer for the 8004 Agent Registry.
+Solana indexer for the 8004 Agent Registry with GraphQL v2 and transitional REST v1.
 
 ## Features
 
 - WebSocket + polling ingestion modes
 - Reorg resilience with verification worker
-- GraphQL API (`/graphql`) with query depth/complexity guards
+- GraphQL API (`/v2/graphql`) with query depth/complexity guards
+- Legacy REST v1 (`/rest/v1/*`) still available when `API_MODE=rest|hybrid`
 - Supabase/PostgreSQL data backend support
+- Strict events-only integrity policy:
+  - revoke/response without parent feedback => `ORPHANED`
+  - revoke/response `seal_hash` mismatch => `ORPHANED`
+  - GraphQL filters exclude `ORPHANED` records by default
 
 ## Quick Start
 
@@ -19,10 +24,10 @@ npm run db:push
 npm run dev
 ```
 
-GraphQL endpoint:
+GraphQL v2 endpoint:
 
 ```text
-http://localhost:3001/graphql
+http://localhost:3001/v2/graphql
 ```
 
 ## Required Environment
@@ -38,8 +43,10 @@ WS_URL=wss://api.devnet.solana.com
 
 Notes:
 
-- API is GraphQL-only.
-- GraphQL API requires `DB_MODE=supabase`.
+- `API_MODE=graphql` is default.
+- GraphQL requires `DB_MODE=supabase`.
+- REST v1 requires `DB_MODE=local` (Prisma).
+- `GRAPHQL_STATS_CACHE_TTL_MS` controls `globalStats`/`protocol` aggregate cache TTL (default `60000` ms).
 
 ## Commands
 
@@ -50,6 +57,7 @@ npm test
 npm run test:e2e
 npm run check:graphql:coherence
 npm run bench:graphql:sql
+npm run bench:hashchain
 ```
 
 ## GraphQL Example

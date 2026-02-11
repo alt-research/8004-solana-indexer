@@ -1,6 +1,6 @@
 {
   "name": "8004-solana-indexer",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Custom Solana indexer for 8004 Agent Registry v0.4.0",
   "type": "module",
   "main": "dist/index.js",
@@ -33,6 +33,7 @@
     "bench:vitest:node": "bun scripts/benchmark-vitest-runtime.mjs --runtime=node -- run tests/unit/config.test.ts tests/unit/parser/types.test.ts tests/unit/logger.test.ts",
     "bench:vitest:bun": "bun scripts/benchmark-vitest-runtime.mjs --runtime=bun -- run tests/unit/config.test.ts tests/unit/parser/types.test.ts tests/unit/logger.test.ts",
     "bench:vitest:full": "bun scripts/benchmark-vitest-runtime.mjs",
+    "bench:hashchain": "bunx tsx scripts/benchmark-hashchain.ts",
     "bench:graphql:sql": "node scripts/benchmark-graphql-sql.mjs",
     "check:graphql:coherence": "node scripts/check-graphql-coherence.mjs",
     "lint": "bunx eslint src --ext .ts",

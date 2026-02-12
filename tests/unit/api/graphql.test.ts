@@ -254,6 +254,73 @@ describe('Scalar Resolvers', () => {
   });
 });
 
+describe('Query Resolver User Input Errors', () => {
+  it('returns BAD_USER_INPUT when combining after and skip', async () => {
+    const poolQuery = vi.fn();
+    const ctx = {
+      pool: { query: poolQuery },
+      prisma: null,
+      loaders: {},
+      networkMode: 'devnet',
+    } as any;
+    const after = Buffer.from(JSON.stringify({
+      created_at: '2025-01-01T00:00:00Z',
+      asset: 'agent1',
+    })).toString('base64');
+
+    await expect(
+      queryResolvers.Query.agents({}, { first: 10, skip: 1, after }, ctx)
+    ).rejects.toMatchObject({
+      message: 'Cannot combine cursor pagination (after) with offset pagination (skip).',
+      extensions: { code: 'BAD_USER_INPUT' },
+    });
+
+    expect(poolQuery).not.toHaveBeenCalled();
+  });
+
+  it('returns BAD_USER_INPUT when using after with non-createdAt orderBy', async () => {
+    const poolQuery = vi.fn();
+    const ctx = {
+      pool: { query: poolQuery },
+      prisma: null,
+      loaders: {},
+      networkMode: 'devnet',
+    } as any;
+    const after = Buffer.from(JSON.stringify({
+      created_at: '2025-01-01T00:00:00Z',
+      asset: 'agent1',
+    })).toString('base64');
+
+    await expect(
+      queryResolvers.Query.agents({}, { first: 10, after, orderBy: 'updatedAt' }, ctx)
+    ).rejects.toMatchObject({
+      message: 'The after cursor is only supported when orderBy is createdAt.',
+      extensions: { code: 'BAD_USER_INPUT' },
+    });
+
+    expect(poolQuery).not.toHaveBeenCalled();
+  });
+
+  it('returns BAD_USER_INPUT for invalid feedbackResponses cursor format', async () => {
+    const poolQuery = vi.fn();
+    const ctx = {
+      pool: { query: poolQuery },
+      prisma: null,
+      loaders: {},
+      networkMode: 'devnet',
+    } as any;
+
+    await expect(
+      queryResolvers.Query.feedbackResponses({}, { first: 10, after: 'invalid-cursor' }, ctx)
+    ).rejects.toMatchObject({
+      message: 'Invalid feedbackResponses cursor. Expected base64 JSON with created_at and optional id.',
+      extensions: { code: 'BAD_USER_INPUT' },
+    });
+
+    expect(poolQuery).not.toHaveBeenCalled();
+  });
+});
+
 describe('Query Aggregated Stats Cache', () => {
   beforeEach(() => {
     resetAggregatedStatsCacheForTests();

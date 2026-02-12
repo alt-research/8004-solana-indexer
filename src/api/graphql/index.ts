@@ -10,6 +10,7 @@ import { resolvers } from './resolvers/index.js';
 import { createContext } from './context.js';
 import { analyzeQuery } from './plugins/complexity.js';
 import { analyzeDepth } from './plugins/depth-limit.js';
+import { createBadUserInputError } from './utils/errors.js';
 import { createChildLogger } from '../../logger.js';
 import type { DocumentNode } from 'graphql';
 
@@ -57,20 +58,22 @@ export function createGraphQLHandler(options: GraphQLHandlerOptions) {
 
             const complexityResult = analyzeQuery(result);
             if (!complexityResult.allowed) {
+              const reason = complexityResult.reason ?? 'Query complexity limit exceeded.';
               logger.warn({
                 cost: complexityResult.cost,
-                reason: complexityResult.reason,
+                reason,
               }, 'Query rejected: complexity');
-              throw new Error(complexityResult.reason);
+              throw createBadUserInputError(reason);
             }
 
             const depthResult = analyzeDepth(result);
             if (!depthResult.allowed) {
+              const reason = depthResult.reason ?? 'Query depth limit exceeded.';
               logger.warn({
                 depth: depthResult.depth,
-                reason: depthResult.reason,
+                reason,
               }, 'Query rejected: depth');
-              throw new Error(depthResult.reason);
+              throw createBadUserInputError(reason);
             }
 
             logger.debug({

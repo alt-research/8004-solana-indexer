@@ -2,6 +2,7 @@ import type { GraphQLContext } from '../context.js';
 import { decodeFeedbackId, decodeResponseId, decodeValidationId, decodeAgentId } from '../utils/ids.js';
 import { clampFirst, clampSkip, MAX_FIRST } from '../utils/pagination.js';
 import { buildWhereClause } from '../utils/filters.js';
+import { createBadUserInputError } from '../utils/errors.js';
 import type { AgentRow, FeedbackRow, ResponseRow, ValidationRow } from '../dataloaders.js';
 import { config } from '../../../config.js';
 
@@ -66,13 +67,13 @@ function decodeFlexibleCursor(cursor: string): DecodedCursor | null {
 
 function assertNoMixedCursorOffset(after: string | undefined, skip: number): void {
   if (after && skip > 0) {
-    throw new Error('Cannot combine cursor pagination (after) with offset pagination (skip).');
+    throw createBadUserInputError('Cannot combine cursor pagination (after) with offset pagination (skip).');
   }
 }
 
 function assertCursorOrderCompatibility(after: string | undefined, orderCol: string): void {
   if (after && orderCol !== 'created_at') {
-    throw new Error('The after cursor is only supported when orderBy is createdAt.');
+    throw createBadUserInputError('The after cursor is only supported when orderBy is createdAt.');
   }
 }
 
@@ -187,7 +188,7 @@ export const queryResolvers = {
       if (args.after) {
         const cursor = decodeFlexibleCursor(args.after);
         if (!cursor || !cursor.asset) {
-          throw new Error('Invalid agents cursor. Expected base64 JSON with created_at and asset.');
+          throw createBadUserInputError('Invalid agents cursor. Expected base64 JSON with created_at and asset.');
         }
         const op = dir === 'DESC' ? '<' : '>';
         cursorSql = ` AND (created_at, asset) ${op} ($${paramIdx}::timestamptz, $${paramIdx + 1}::text)`;
@@ -289,7 +290,7 @@ export const queryResolvers = {
       if (args.after) {
         const cursor = decodeFlexibleCursor(args.after);
         if (!cursor || !cursor.asset) {
-          throw new Error('Invalid feedbacks cursor. Expected base64 JSON with created_at and asset.');
+          throw createBadUserInputError('Invalid feedbacks cursor. Expected base64 JSON with created_at and asset.');
         }
         const op = dir === 'DESC' ? '<' : '>';
         const cursorId = cursor.id ?? '';
@@ -357,7 +358,7 @@ export const queryResolvers = {
       if (args.after) {
         const cursor = decodeFlexibleCursor(args.after);
         if (!cursor) {
-          throw new Error('Invalid feedbackResponses cursor. Expected base64 JSON with created_at and optional id.');
+          throw createBadUserInputError('Invalid feedbackResponses cursor. Expected base64 JSON with created_at and optional id.');
         }
         const op = dir === 'DESC' ? '<' : '>';
         const cursorId = cursor.id ?? '';
@@ -417,7 +418,7 @@ export const queryResolvers = {
       if (args.after) {
         const cursor = decodeFlexibleCursor(args.after);
         if (!cursor) {
-          throw new Error('Invalid validations cursor. Expected base64 JSON with created_at and optional id.');
+          throw createBadUserInputError('Invalid validations cursor. Expected base64 JSON with created_at and optional id.');
         }
         const cursorId = cursor.id ?? '';
         cursorSql = ` AND (created_at, id) < ($${paramIdx}::timestamptz, $${paramIdx + 1}::text)`;

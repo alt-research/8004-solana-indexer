@@ -31,6 +31,7 @@ COPY --from=builder /app/dist ./dist/
 COPY --from=builder /app/node_modules ./node_modules/
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/prisma ./prisma/
+COPY idl ./idl/
 
 # Use tini for proper signal handling (SIGTERM for graceful shutdown)
 ENTRYPOINT ["/sbin/tini", "--"]

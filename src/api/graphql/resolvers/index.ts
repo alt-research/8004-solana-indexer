@@ -12,7 +12,13 @@ import { hashChainResolvers } from './hashchain.js';
 
 export const resolvers = {
   ...scalarResolvers,
-  ...queryResolvers,
+
+  // Multiple modules contribute to Query; merge them instead of overwriting.
+  Query: {
+    ...queryResolvers.Query,
+    ...hashChainResolvers.Query,
+  },
+
   ...agentResolvers,
   ...feedbackResolvers,
   ...responseResolvers,
@@ -21,5 +27,4 @@ export const resolvers = {
   ...statsResolvers,
   ...registrationResolvers,
   ...solanaResolvers,
-  ...hashChainResolvers,
 };

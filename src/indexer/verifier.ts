@@ -1129,8 +1129,11 @@ export class DataVerifier {
         logger.warn({
           agentId, chain,
           count: Number(dbCount),
-          dbDigest: dbDigest.toString('hex').slice(0, 16) + '...',
-          onChainDigest: onChainBuf.toString('hex').slice(0, 16) + '...',
+          dbDigest: dbDigest.toString('hex'),
+          onChainDigest: onChainBuf.toString('hex'),
+          dbType: typeof dbDigest === 'object' ? dbDigest.constructor.name : typeof dbDigest,
+          dbLen: dbDigest.length,
+          onChainLen: onChainBuf.length,
         }, "Hash-chain MISMATCH - digests differ at same count");
         return false;
       }
@@ -1201,12 +1204,23 @@ export class DataVerifier {
         this.pool.query(`SELECT COUNT(*)::bigint AS cnt FROM revocations WHERE asset = $1 AND status != 'ORPHANED'`, [agentId]),
       ]);
 
+      const toBuffer = (val: unknown): Buffer | null => {
+        if (!val) return null;
+        if (Buffer.isBuffer(val)) return val;
+        if (val instanceof Uint8Array) return Buffer.from(val);
+        if (typeof val === 'string') {
+          const hex = val.startsWith('\\x') ? val.slice(2) : val;
+          return Buffer.from(hex, 'hex');
+        }
+        return null;
+      };
+
       return {
-        feedbackDigest: fbRes.rows[0]?.running_digest ?? null,
+        feedbackDigest: toBuffer(fbRes.rows[0]?.running_digest),
         feedbackCount: BigInt(fbCnt.rows[0]?.cnt ?? 0),
-        responseDigest: respRes.rows[0]?.running_digest ?? null,
+        responseDigest: toBuffer(respRes.rows[0]?.running_digest),
         responseCount: BigInt(respCnt.rows[0]?.cnt ?? 0),
-        revokeDigest: revRes.rows[0]?.running_digest ?? null,
+        revokeDigest: toBuffer(revRes.rows[0]?.running_digest),
         revokeCount: BigInt(revCnt.rows[0]?.cnt ?? 0),
       };
     }

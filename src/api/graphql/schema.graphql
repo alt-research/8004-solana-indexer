@@ -303,8 +303,8 @@ type HashChainReplayPage {
   nextFromCount: BigInt!
 }
 
-type CollectionPointer {
-  col: String!
+type Collection {
+  collection: String!
   creator: String!
   firstSeenAsset: String!
   firstSeenAt: BigInt!
@@ -314,6 +314,19 @@ type CollectionPointer {
   lastSeenSlot: BigInt!
   lastSeenTxSignature: String
   assetCount: BigInt!
+  version: String
+  name: String
+  symbol: String
+  description: String
+  image: String
+  bannerImage: String
+  socialWebsite: String
+  socialX: String
+  socialDiscord: String
+  metadataStatus: String
+  metadataHash: String
+  metadataBytes: BigInt
+  metadataUpdatedAt: BigInt
 }
 
 type AgentTreeNode {
@@ -351,13 +364,13 @@ type Query {
     orderBy: FeedbackResponseOrderBy
     orderDirection: OrderDirection
   ): [FeedbackResponse!]!
-  validation(id: ID!): Validation
+  validation(id: ID!): Validation @deprecated(reason: "Validation module is archived in agent-registry-8004 (v0.5.0+).")
   validations(
     first: Int = 100
     skip: Int = 0
     after: String
     where: ValidationFilter
-  ): [Validation!]!
+  ): [Validation!]! @deprecated(reason: "Validation module is archived in agent-registry-8004 (v0.5.0+).")
   agentMetadatas(
     first: Int = 100
     skip: Int = 0
@@ -382,12 +395,12 @@ type Query {
     toCount: BigInt
     first: Int = 1000
   ): HashChainReplayPage!
-  collectionPointers(
+  collections(
     first: Int = 100
     skip: Int = 0
-    col: String
+    collection: String
     creator: String
-  ): [CollectionPointer!]!
+  ): [Collection!]!
   agentChildren(
     parent: ID!
     first: Int = 100
@@ -401,11 +414,11 @@ type Query {
     skip: Int = 0
   ): [AgentTreeNode!]!
   collectionAssetCount(
-    col: String!
+    collection: String!
     creator: String
   ): BigInt!
   collectionAssets(
-    col: String!
+    collection: String!
     creator: String
     first: Int = 100
     skip: Int = 0

@@ -30,6 +30,15 @@ GraphQL v2 endpoint:
 http://localhost:3001/v2/graphql
 ```
 
+## Remote API Docs
+
+Canonical API docs are maintained in:
+
+- https://github.com/QuantuLabs/8004-solana-api
+- https://github.com/QuantuLabs/8004-solana-api/blob/main/docs/rest-v1.md
+- https://github.com/QuantuLabs/8004-solana-api/blob/main/docs/collections.md
+- https://github.com/QuantuLabs/8004-solana-api/tree/main/docs/examples
+
 ## Required Environment
 
 ```bash

@@ -53,6 +53,19 @@ CREATE TABLE collection_pointers (
   last_seen_slot BIGINT NOT NULL,
   last_seen_tx_signature TEXT,
   asset_count BIGINT NOT NULL DEFAULT 0 CHECK (asset_count >= 0),
+  version TEXT,
+  name TEXT,
+  symbol TEXT,
+  description TEXT,
+  image TEXT,
+  banner_image TEXT,
+  social_website TEXT,
+  social_x TEXT,
+  social_discord TEXT,
+  metadata_status TEXT,
+  metadata_hash TEXT,
+  metadata_bytes INTEGER,
+  metadata_updated_at TIMESTAMPTZ,
   PRIMARY KEY (col, creator)
 );
 

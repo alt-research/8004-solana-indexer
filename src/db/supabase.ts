@@ -138,6 +138,7 @@ export function getPool(): Pool {
     });
     // Initialize metadata queue with same pool
     metadataQueue.setPool(pool);
+    collectionMetadataQueue.setPool(pool);
     logger.info({ metadataMode: config.metadataIndexMode }, "Metadata extraction queue initialized");
   }
   return pool;
@@ -587,6 +588,10 @@ async function handleCollectionPointerSetTx(
     [assetId, pointer, setBy, ctx.slot.toString(), ctx.blockTime.toISOString(), ctx.signature]
   );
   logger.info({ assetId, col: pointer, setBy }, "Collection pointer set");
+
+  if (config.collectionMetadataIndexEnabled) {
+    collectionMetadataQueue.add(assetId, pointer);
+  }
 }
 
 async function handleParentAssetSetTx(
@@ -1175,6 +1180,10 @@ async function handleCollectionPointerSet(
       [assetId, pointer, setBy, ctx.slot.toString(), ctx.blockTime.toISOString(), ctx.signature]
     );
     logger.info({ assetId, col: pointer, setBy }, "Collection pointer set");
+
+    if (config.collectionMetadataIndexEnabled) {
+      collectionMetadataQueue.add(assetId, pointer);
+    }
   } catch (error: any) {
     logger.error({ error: error.message, assetId }, "Failed collection pointer set");
   }
@@ -1680,6 +1689,7 @@ import { digestUri, serializeValue } from "../indexer/uriDigest.js";
 import { compressForStorage } from "../utils/compression.js";
 import { stripNullBytes } from "../utils/sanitize.js";
 import { metadataQueue } from "../indexer/metadata-queue.js";
+import { collectionMetadataQueue } from "../indexer/collection-metadata-queue.js";
 
 /**
  * Fetch, digest, and store URI metadata for an agent

@@ -137,6 +137,9 @@ export const config = {
   // URI Metadata indexing (fetch and extract fields from agent_uri)
   // off = don't fetch URIs, normal = extract standard fields, full = store entire JSON
   metadataIndexMode: parseMetadataMode(process.env.INDEX_METADATA),
+  // Collection metadata indexing from canonical pointer (c1:<cid>)
+  // true = fetch and parse collection JSON, false = keep on-chain only
+  collectionMetadataIndexEnabled: parseBoolean(process.env.INDEX_COLLECTION_METADATA, true),
   // Maximum bytes to fetch from URI (prevents memory exhaustion)
   metadataMaxBytes: parseInt(process.env.METADATA_MAX_BYTES || "262144", 10), // 256KB
   // Maximum bytes per field value (prevents single oversize field)

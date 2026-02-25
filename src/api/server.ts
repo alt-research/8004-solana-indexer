@@ -7,7 +7,7 @@ import express, { Express, Request, Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import { LRUCache } from 'lru-cache';
 import { Server } from 'http';
-import { PrismaClient, Prisma, Agent as PrismaAgent, CollectionPointer as PrismaCollectionPointer } from '@prisma/client';
+import { PrismaClient, Prisma, Agent as PrismaAgent, Collection as PrismaCollection } from '@prisma/client';
 import { logger } from '../logger.js';
 import { decompressFromStorage } from '../utils/compression.js';
 import { ReplayVerifier } from '../services/replay-verifier.js';
@@ -248,18 +248,31 @@ function mapAgentToApi(a: AgentApiRow): Record<string, unknown> {
   };
 }
 
-function mapCollectionPointerToApi(pointer: PrismaCollectionPointer): Record<string, unknown> {
+function mapCollectionToApi(collection: PrismaCollection): Record<string, unknown> {
   return {
-    col: pointer.col,
-    creator: pointer.creator,
-    first_seen_asset: pointer.firstSeenAsset,
-    first_seen_at: pointer.firstSeenAt.toISOString(),
-    first_seen_slot: pointer.firstSeenSlot.toString(),
-    first_seen_tx_signature: pointer.firstSeenTxSignature,
-    last_seen_at: pointer.lastSeenAt.toISOString(),
-    last_seen_slot: pointer.lastSeenSlot.toString(),
-    last_seen_tx_signature: pointer.lastSeenTxSignature,
-    asset_count: pointer.assetCount.toString(),
+    collection: collection.col,
+    creator: collection.creator,
+    first_seen_asset: collection.firstSeenAsset,
+    first_seen_at: collection.firstSeenAt.toISOString(),
+    first_seen_slot: collection.firstSeenSlot.toString(),
+    first_seen_tx_signature: collection.firstSeenTxSignature,
+    last_seen_at: collection.lastSeenAt.toISOString(),
+    last_seen_slot: collection.lastSeenSlot.toString(),
+    last_seen_tx_signature: collection.lastSeenTxSignature,
+    asset_count: collection.assetCount.toString(),
+    version: collection.version,
+    name: collection.name,
+    symbol: collection.symbol,
+    description: collection.description,
+    image: collection.image,
+    banner_image: collection.bannerImage,
+    social_website: collection.socialWebsite,
+    social_x: collection.socialX,
+    social_discord: collection.socialDiscord,
+    metadata_status: collection.metadataStatus,
+    metadata_hash: collection.metadataHash,
+    metadata_bytes: collection.metadataBytes,
+    metadata_updated_at: collection.metadataUpdatedAt?.toISOString() || null,
   };
 }
 
@@ -398,8 +411,7 @@ export function createApiServer(options: ApiServerOptions): Express {
       const owner = parsePostgRESTValue(req.query.owner);
       const creator = parsePostgRESTValue(req.query.creator);
       const collection = parsePostgRESTValue(req.query.collection);
-      const collectionPointer = parsePostgRESTValue(req.query.canonical_col)
-        ?? parsePostgRESTValue(req.query.collection_pointer);
+      const collectionPointer = parsePostgRESTValue(req.query.canonical_col);
       const agent_wallet = parsePostgRESTValue(req.query.agent_wallet);
       const parentAsset = parsePostgRESTValue(req.query.parent_asset);
       const parentCreator = parsePostgRESTValue(req.query.parent_creator);
@@ -872,122 +884,30 @@ export function createApiServer(options: ApiServerOptions): Express {
     }
   });
 
-  // GET /rest/v1/validations - List validations with filters (PostgREST format)
-  app.get('/rest/v1/validations', async (req: Request, res: Response) => {
-    try {
-      const asset = parsePostgRESTValue(req.query.asset);
-      const validator = parsePostgRESTValue(req.query.validator) || parsePostgRESTValue(req.query.validator_address);
-      const nonce = parsePostgRESTValue(req.query.nonce);
-      const responded = parsePostgRESTValue(req.query.responded);
-      const limit = safePaginationLimit(req.query.limit);
-      const offset = safePaginationOffset(req.query.offset);
-
-      const statusFilter = buildStatusFilter(req, 'chainStatus', ['chain_status', 'status']);
-      if (isInvalidStatus(statusFilter)) {
-        res.status(400).json({ error: 'Invalid status value. Allowed: PENDING, FINALIZED, ORPHANED' });
-        return;
-      }
-      const where: Prisma.ValidationWhereInput = { ...statusFilter };
-      if (asset) where.agentId = asset;
-      if (validator) where.validator = validator;
-      if (nonce !== undefined) {
-        const nonceInt = safeBigInt(nonce);
-        if (nonceInt !== undefined) where.nonce = nonceInt;
-      }
-      if (responded !== undefined) {
-        where.response = responded === 'true' ? { not: null } : null;
-      }
-
-      const validations = await prisma.validation.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        take: limit,
-        skip: offset,
-      });
-
-      // Map to SDK expected format (IndexedValidation interface)
-      // Note: nonce is BigInt but small values - safe to convert to Number for JSON
-      const mapped = validations.map(v => ({
-        id: v.id,
-        asset: v.agentId,
-        validator_address: v.validator,
-        nonce: v.nonce > BigInt(Number.MAX_SAFE_INTEGER) ? v.nonce.toString() : Number(v.nonce),
-        requester: v.requester,
-        request_uri: v.requestUri,
-        request_hash: v.requestHash ? Buffer.from(v.requestHash).toString('hex') : null,
-        response: v.response,
-        response_uri: v.responseUri,
-        response_hash: v.responseHash ? Buffer.from(v.responseHash).toString('hex') : null,
-        tag: v.tag,
-        status: v.response !== null ? 'RESPONDED' as const : 'PENDING' as const,
-        chain_status: v.chainStatus,
-        chain_verified_at: v.chainVerifiedAt?.toISOString() || null,
-        block_slot: v.requestSlot ? Number(v.requestSlot) : (v.responseSlot ? Number(v.responseSlot) : 0),
-        tx_signature: v.requestTxSignature || v.responseTxSignature || '',
-        created_at: v.createdAt.toISOString(),
-        updated_at: v.respondedAt?.toISOString() || v.createdAt.toISOString(),
-      }));
-
-      res.json(mapped);
-    } catch (error) {
-      logger.error({ error }, 'Error fetching validations');
-      res.status(500).json({ error: 'Internal server error' });
-    }
+  // GET /rest/v1/validations - disabled (validation module archived on-chain in v0.5.0+)
+  app.get('/rest/v1/validations', async (_req: Request, res: Response) => {
+    res.status(410).json({
+      error: 'Validation module is archived in agent-registry-8004 (v0.5.0+). Endpoint disabled.',
+    });
   });
 
-  // GET /rest/v1/registries - List registries/collections (PostgREST format)
-  app.get('/rest/v1/registries', async (req: Request, res: Response) => {
+  // GET /rest/v1/collections - Canonical collections (creator + collection pointer key)
+  app.get('/rest/v1/collections', async (req: Request, res: Response) => {
     try {
-      const collection = parsePostgRESTValue(req.query.collection);
-      const limit = safePaginationLimit(req.query.limit);
-      const offset = safePaginationOffset(req.query.offset);
-
-      const statusFilter = buildStatusFilter(req);
-      if (isInvalidStatus(statusFilter)) {
-        res.status(400).json({ error: 'Invalid status value. Allowed: PENDING, FINALIZED, ORPHANED' });
-        return;
-      }
-      const where: Prisma.RegistryWhereInput = { ...statusFilter };
-      if (collection) where.collection = collection;
-
-      const registries = await prisma.registry.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        take: limit,
-        skip: offset,
-      });
-
-      // Convert BigInt fields to strings for JSON serialization
-      const mapped = registries.map(r => ({
-        ...r,
-        slot: r.slot !== null ? r.slot.toString() : null,
-        verified_at: r.verifiedAt?.toISOString() || null,
-      }));
-
-      res.json(mapped);
-    } catch (error) {
-      logger.error({ error }, 'Error fetching registries');
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  });
-
-  // GET /rest/v1/collection_pointers - Canonical collection pointers (PostgREST format)
-  app.get('/rest/v1/collection_pointers', async (req: Request, res: Response) => {
-    try {
-      const col = parsePostgRESTValue(req.query.col) ?? parsePostgRESTValue(req.query.collection_pointer);
+      const col = parsePostgRESTValue(req.query.collection);
       const creator = parsePostgRESTValue(req.query.creator);
       const firstSeenAsset = parsePostgRESTValue(req.query.first_seen_asset);
       const limit = safePaginationLimit(req.query.limit);
       const offset = safePaginationOffset(req.query.offset);
 
-      const where: Prisma.CollectionPointerWhereInput = {};
+      const where: Prisma.CollectionWhereInput = {};
       if (col) where.col = col;
       if (creator) where.creator = creator;
       if (firstSeenAsset) where.firstSeenAsset = firstSeenAsset;
 
       const needsCount = wantsCount(req);
       const [rows, totalCount] = await Promise.all([
-        prisma.collectionPointer.findMany({
+        prisma.collection.findMany({
           where,
           orderBy: [
             { firstSeenAt: 'desc' },
@@ -997,16 +917,16 @@ export function createApiServer(options: ApiServerOptions): Express {
           take: limit,
           skip: offset,
         }),
-        needsCount ? prisma.collectionPointer.count({ where }) : Promise.resolve(0),
+        needsCount ? prisma.collection.count({ where }) : Promise.resolve(0),
       ]);
 
       if (needsCount) {
         setContentRange(res, offset, rows.length, totalCount);
       }
 
-      res.json(rows.map(mapCollectionPointerToApi));
+      res.json(rows.map(mapCollectionToApi));
     } catch (error) {
-      logger.error({ error }, 'Error fetching collection pointers');
+      logger.error({ error }, 'Error fetching collections');
       res.status(500).json({ error: 'Internal server error' });
     }
   });
@@ -1014,9 +934,9 @@ export function createApiServer(options: ApiServerOptions): Express {
   // GET /rest/v1/collection_asset_count - Count assets for creator+col scope
   app.get('/rest/v1/collection_asset_count', async (req: Request, res: Response) => {
     try {
-      const col = parsePostgRESTValue(req.query.col) ?? parsePostgRESTValue(req.query.collection_pointer);
+      const col = parsePostgRESTValue(req.query.collection);
       if (!col) {
-        res.status(400).json({ error: 'Missing required query param: col' });
+        res.status(400).json({ error: 'Missing required query param: collection' });
         return;
       }
       const creator = parsePostgRESTValue(req.query.creator);
@@ -1032,7 +952,7 @@ export function createApiServer(options: ApiServerOptions): Express {
 
       const count = await prisma.agent.count({ where });
       res.json({
-        col,
+        collection: col,
         creator: creator || null,
         asset_count: count,
       });
@@ -1045,9 +965,9 @@ export function createApiServer(options: ApiServerOptions): Express {
   // GET /rest/v1/collection_assets - Paginated assets for a canonical collection pointer
   app.get('/rest/v1/collection_assets', async (req: Request, res: Response) => {
     try {
-      const col = parsePostgRESTValue(req.query.col) ?? parsePostgRESTValue(req.query.collection_pointer);
+      const col = parsePostgRESTValue(req.query.collection);
       if (!col) {
-        res.status(400).json({ error: 'Missing required query param: col' });
+        res.status(400).json({ error: 'Missing required query param: collection' });
         return;
       }
       const creator = parsePostgRESTValue(req.query.creator);

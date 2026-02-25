@@ -1,9 +1,9 @@
 import type { GraphQLContext } from '../context.js';
-import { decodeFeedbackId, decodeResponseId, decodeValidationId, decodeAgentId } from '../utils/ids.js';
+import { decodeFeedbackId, decodeResponseId, decodeAgentId } from '../utils/ids.js';
 import { clampFirst, clampSkip, MAX_FIRST } from '../utils/pagination.js';
 import { buildWhereClause } from '../utils/filters.js';
 import { createBadUserInputError } from '../utils/errors.js';
-import type { AgentRow, FeedbackRow, ResponseRow, ValidationRow } from '../dataloaders.js';
+import type { AgentRow, FeedbackRow, ResponseRow } from '../dataloaders.js';
 import { config } from '../../../config.js';
 
 const ORDER_MAP_AGENT: Record<string, string> = {
@@ -66,7 +66,7 @@ interface DecodedCursor {
   id?: string;
 }
 
-interface CollectionPointerRow {
+interface CollectionRow {
   col: string;
   creator: string;
   first_seen_asset: string;
@@ -77,6 +77,19 @@ interface CollectionPointerRow {
   last_seen_slot: string;
   last_seen_tx_signature: string | null;
   asset_count: string;
+  version: string | null;
+  name: string | null;
+  symbol: string | null;
+  description: string | null;
+  image: string | null;
+  banner_image: string | null;
+  social_website: string | null;
+  social_x: string | null;
+  social_discord: string | null;
+  metadata_status: string | null;
+  metadata_hash: string | null;
+  metadata_bytes: string | null;
+  metadata_updated_at: string | null;
 }
 
 interface AgentTreeNodeRow {
@@ -434,65 +447,23 @@ export const queryResolvers = {
       return rows;
     },
 
-    async validation(_: unknown, args: { id: string }, ctx: GraphQLContext) {
-      const decoded = decodeValidationId(args.id);
-      if (!decoded) return null;
-
-      const { rows } = await ctx.pool.query<ValidationRow>(
-        `SELECT id, asset, validator_address AS validator, requester, nonce, request_uri, request_hash,
-                response, response_uri, response_hash, tag, chain_status,
-                created_at, updated_at AS responded_at,
-                tx_signature AS request_tx_signature,
-                tx_signature AS response_tx_signature
-         FROM validations
-         WHERE asset = $1 AND validator_address = $2 AND nonce = $3
-         AND chain_status != 'ORPHANED'`,
-        [decoded.asset, decoded.validator, decoded.nonce]
-      );
-      return rows[0] ?? null;
+    async validation(_: unknown, _args: { id: string }, _ctx: GraphQLContext) {
+      // Validation module is archived in agent-registry-8004 (v0.5.0+).
+      // Keep schema field for backward compatibility, but return no rows.
+      return null;
     },
 
     async validations(
       _: unknown,
-      args: {
+      _args: {
         first?: number; skip?: number; after?: string;
         where?: Record<string, unknown>;
       },
-      ctx: GraphQLContext
+      _ctx: GraphQLContext
     ) {
-      const first = clampFirst(args.first);
-      const skip = clampSkip(args.skip);
-
-      assertNoMixedCursorOffset(args.after, skip);
-
-      const where = buildWhereClause('validation', args.where);
-      const params = [...where.params];
-      let paramIdx = where.paramIndex;
-
-      let cursorSql = '';
-      if (args.after) {
-        const cursor = decodeFlexibleCursor(args.after);
-        if (!cursor) {
-          throw createBadUserInputError('Invalid validations cursor. Expected base64 JSON with created_at and optional id.');
-        }
-        const cursorId = cursor.id ?? '';
-        cursorSql = ` AND (created_at, id) < ($${paramIdx}::timestamptz, $${paramIdx + 1}::text)`;
-        params.push(cursor.created_at, cursorId);
-        paramIdx += 2;
-      }
-
-      const sql = `SELECT id, asset, validator_address AS validator, requester, nonce, request_uri, request_hash,
-                          response, response_uri, response_hash, tag, chain_status,
-                          created_at, updated_at AS responded_at,
-                          tx_signature AS request_tx_signature,
-                          tx_signature AS response_tx_signature
-                   FROM validations ${where.sql}${cursorSql}
-                   ORDER BY created_at DESC, id DESC
-                   LIMIT $${paramIdx}::int OFFSET $${paramIdx + 1}::int`;
-      params.push(first, skip);
-
-      const { rows } = await ctx.pool.query<ValidationRow>(sql, params);
-      return rows;
+      // Validation module is archived in agent-registry-8004 (v0.5.0+).
+      // Keep schema field for backward compatibility, but return no rows.
+      return [];
     },
 
     async agentMetadatas(
@@ -595,12 +566,12 @@ export const queryResolvers = {
       return rows;
     },
 
-    async collectionPointers(
+    async collections(
       _: unknown,
       args: {
         first?: number;
         skip?: number;
-        col?: string;
+        collection?: string;
         creator?: string;
       },
       ctx: GraphQLContext
@@ -611,9 +582,9 @@ export const queryResolvers = {
       const filters: string[] = [];
       let paramIdx = 1;
 
-      if (args.col) {
+      if (args.collection) {
         filters.push(`col = $${paramIdx}::text`);
-        params.push(args.col);
+        params.push(args.collection);
         paramIdx++;
       }
       if (args.creator) {
@@ -633,16 +604,29 @@ export const queryResolvers = {
                           last_seen_at,
                           last_seen_slot::text,
                           last_seen_tx_signature,
-                          asset_count::text
+                          asset_count::text,
+                          version,
+                          name,
+                          symbol,
+                          description,
+                          image,
+                          banner_image,
+                          social_website,
+                          social_x,
+                          social_discord,
+                          metadata_status,
+                          metadata_hash,
+                          metadata_bytes::text,
+                          metadata_updated_at
                    FROM collection_pointers
                    ${whereSql}
                    ORDER BY first_seen_at DESC, col ASC, creator ASC
                    LIMIT $${paramIdx}::int OFFSET $${paramIdx + 1}::int`;
       params.push(first, skip);
 
-      const { rows } = await ctx.pool.query<CollectionPointerRow>(sql, params);
+      const { rows } = await ctx.pool.query<CollectionRow>(sql, params);
       return rows.map((row) => ({
-        col: row.col,
+        collection: row.col,
         creator: row.creator,
         firstSeenAsset: row.first_seen_asset,
         firstSeenAt: toUnixTimestamp(row.first_seen_at),
@@ -652,18 +636,31 @@ export const queryResolvers = {
         lastSeenSlot: row.last_seen_slot,
         lastSeenTxSignature: row.last_seen_tx_signature,
         assetCount: row.asset_count,
+        version: row.version,
+        name: row.name,
+        symbol: row.symbol,
+        description: row.description,
+        image: row.image,
+        bannerImage: row.banner_image,
+        socialWebsite: row.social_website,
+        socialX: row.social_x,
+        socialDiscord: row.social_discord,
+        metadataStatus: row.metadata_status,
+        metadataHash: row.metadata_hash,
+        metadataBytes: row.metadata_bytes,
+        metadataUpdatedAt: row.metadata_updated_at ? toUnixTimestamp(row.metadata_updated_at) : null,
       }));
     },
 
     async collectionAssetCount(
       _: unknown,
       args: {
-        col: string;
+        collection: string;
         creator?: string;
       },
       ctx: GraphQLContext
     ) {
-      const params: unknown[] = [args.col];
+      const params: unknown[] = [args.collection];
       let sql = `SELECT COUNT(*)::text AS count
                  FROM agents
                  WHERE status != 'ORPHANED'
@@ -681,7 +678,7 @@ export const queryResolvers = {
     async collectionAssets(
       _: unknown,
       args: {
-        col: string;
+        collection: string;
         creator?: string;
         first?: number;
         skip?: number;
@@ -695,7 +692,7 @@ export const queryResolvers = {
       const dir = resolveDirection(args.orderDirection);
       const orderCol = resolveAgentOrderColumn(args.orderBy);
 
-      const params: unknown[] = [args.col];
+      const params: unknown[] = [args.collection];
       let paramIdx = 2;
       let creatorSql = '';
       if (args.creator) {

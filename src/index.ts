@@ -10,6 +10,7 @@ import { cleanupOrphanResponses } from "./db/handlers.js";
 import { getPool } from "./db/supabase.js";
 import { IDL_VERSION, IDL_PROGRAM_ID } from "./parser/decoder.js";
 import { metadataQueue } from "./indexer/metadata-queue.js";
+import { collectionMetadataQueue } from "./indexer/collection-metadata-queue.js";
 
 async function main() {
   try {
@@ -141,6 +142,7 @@ async function main() {
 
     try {
       metadataQueue.shutdown();
+      collectionMetadataQueue.shutdown();
       await processor.stop();
       if (apiServer) {
         await new Promise<void>((resolve, reject) => {

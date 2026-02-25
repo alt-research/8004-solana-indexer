@@ -456,7 +456,7 @@ describe('Query Aggregated Stats Cache', () => {
 });
 
 describe('Collection And Tree Queries', () => {
-  it('maps collectionPointers rows to GraphQL shape', async () => {
+  it('maps collections rows to GraphQL shape', async () => {
     const query = vi.fn().mockResolvedValue({
       rows: [{
         col: 'c1:bafy-test',
@@ -469,6 +469,19 @@ describe('Collection And Tree Queries', () => {
         last_seen_slot: '130',
         last_seen_tx_signature: 'sig2',
         asset_count: '2',
+        version: '1.0.0',
+        name: 'My Collection',
+        symbol: 'COLL',
+        description: 'Optional description',
+        image: 'ipfs://bafy-img',
+        banner_image: 'ipfs://bafy-banner',
+        social_website: 'https://example.com',
+        social_x: '@mycollection',
+        social_discord: 'https://discord.gg/mycollection',
+        metadata_status: 'ok',
+        metadata_hash: 'abcd',
+        metadata_bytes: '256',
+        metadata_updated_at: '2026-02-25T12:11:00.000Z',
       }],
     });
 
@@ -479,28 +492,33 @@ describe('Collection And Tree Queries', () => {
       networkMode: 'devnet',
     } as any;
 
-    const rows = await queryResolvers.Query.collectionPointers(
+    const rows = await queryResolvers.Query.collections(
       {},
-      { first: 10, skip: 0, col: 'c1:bafy-test' },
+      { first: 10, skip: 0, collection: 'c1:bafy-test' },
       ctx
     );
 
     expect(query).toHaveBeenCalledTimes(1);
     expect(rows).toEqual([
       expect.objectContaining({
-        col: 'c1:bafy-test',
+        collection: 'c1:bafy-test',
         creator: 'Creator111',
         firstSeenAsset: 'Asset111',
         firstSeenSlot: '123',
         lastSeenSlot: '130',
         assetCount: '2',
+        version: '1.0.0',
+        name: 'My Collection',
+        symbol: 'COLL',
+        metadataStatus: 'ok',
+        metadataBytes: '256',
       }),
     ]);
     expect(typeof rows[0].firstSeenAt).toBe('string');
     expect(typeof rows[0].lastSeenAt).toBe('string');
   });
 
-  it('counts assets by creator+col scope', async () => {
+  it('counts assets by creator+collection scope', async () => {
     const query = vi.fn().mockResolvedValue({
       rows: [{ count: '42' }],
     });
@@ -513,7 +531,7 @@ describe('Collection And Tree Queries', () => {
 
     const count = await queryResolvers.Query.collectionAssetCount(
       {},
-      { col: 'c1:bafy-test', creator: 'Creator111' },
+      { collection: 'c1:bafy-test', creator: 'Creator111' },
       ctx
     );
 
@@ -567,7 +585,7 @@ describe('Collection And Tree Queries', () => {
 
     const rows = await queryResolvers.Query.collectionAssets(
       {},
-      { col: 'c1:bafy-test', creator: 'Creator111', first: 25, skip: 5, orderBy: 'createdAt', orderDirection: 'desc' },
+      { collection: 'c1:bafy-test', creator: 'Creator111', first: 25, skip: 5, orderBy: 'createdAt', orderDirection: 'desc' },
       ctx
     );
 

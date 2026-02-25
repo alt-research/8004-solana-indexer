@@ -14,6 +14,7 @@ import { createHash } from "crypto";
 import { createChildLogger } from "../logger.js";
 import { config } from "../config.js";
 import { metadataQueue } from "./metadata-queue.js";
+import { collectionMetadataQueue } from "./collection-metadata-queue.js";
 import { compressForStorage } from "../utils/compression.js";
 import { stripNullBytes } from "../utils/sanitize.js";
 import { DEFAULT_PUBKEY } from "../constants.js";
@@ -365,6 +366,7 @@ export class EventBuffer {
 
     // Collect URIs for post-commit metadata extraction
     const uriTasks: Array<{ assetId: string; uri: string }> = [];
+    const collectionTasks: Array<{ assetId: string; col: string }> = [];
 
     const client = await this.pool.connect();
     try {
@@ -380,6 +382,9 @@ export class EventBuffer {
         } else if (event.type === "UriUpdated" && event.data.newUri) {
           const asset = event.data.asset?.toBase58?.() || event.data.asset;
           uriTasks.push({ assetId: asset, uri: event.data.newUri });
+        } else if (event.type === "CollectionPointerSet" && event.data.col) {
+          const asset = event.data.asset?.toBase58?.() || event.data.asset;
+          collectionTasks.push({ assetId: asset, col: event.data.col });
         }
       }
 
@@ -402,6 +407,9 @@ export class EventBuffer {
       // After successful commit, queue URI metadata extraction (fire-and-forget)
       if (uriTasks.length > 0 && config.metadataIndexMode !== "off") {
         metadataQueue.addBatch(uriTasks);
+      }
+      if (collectionTasks.length > 0 && config.collectionMetadataIndexEnabled) {
+        collectionMetadataQueue.addBatch(collectionTasks);
       }
     } catch (error) {
       await client.query("ROLLBACK");
@@ -749,14 +757,54 @@ export class EventBuffer {
   private async updateCollectionPointerSupabase(client: PoolClient, data: EventData, ctx: BatchEvent["ctx"]): Promise<void> {
     const asset = data.asset?.toBase58?.() || data.asset;
     const setBy = data.setBy?.toBase58?.() || data.setBy;
+    const pointer = data.col || "";
     await client.query(
-      `UPDATE agents
-       SET canonical_col = $1,
-           creator = COALESCE(creator, $2),
-           block_slot = $3,
-           updated_at = $4
-       WHERE asset = $5`,
-      [data.col || "", setBy, ctx.slot.toString(), ctx.blockTime.toISOString(), asset]
+      `WITH previous AS (
+         SELECT canonical_col AS prev_col, COALESCE(creator, owner) AS prev_creator
+         FROM agents
+         WHERE asset = $1
+       ),
+       updated AS (
+         UPDATE agents
+         SET canonical_col = $2,
+             creator = COALESCE(creator, $3),
+             block_slot = $4,
+             updated_at = $5
+         WHERE asset = $1
+         RETURNING 1
+       ),
+       upserted AS (
+         INSERT INTO collection_pointers (
+           col, creator, first_seen_asset, first_seen_at, first_seen_slot, first_seen_tx_signature,
+           last_seen_at, last_seen_slot, last_seen_tx_signature, asset_count
+         )
+         VALUES ($2, $3, $1, $5, $4, $6, $5, $4, $6, 0)
+         ON CONFLICT (col, creator) DO UPDATE SET
+           last_seen_at = EXCLUDED.last_seen_at,
+           last_seen_slot = EXCLUDED.last_seen_slot,
+           last_seen_tx_signature = EXCLUDED.last_seen_tx_signature
+         RETURNING col
+       ),
+       dec_old AS (
+         UPDATE collection_pointers cp
+         SET asset_count = GREATEST(0, cp.asset_count - 1)
+         WHERE cp.col = COALESCE((SELECT prev_col FROM previous), '')
+           AND cp.creator = COALESCE((SELECT prev_creator FROM previous), '')
+           AND cp.col <> ''
+           AND (cp.col <> $2 OR cp.creator <> $3)
+           AND EXISTS (SELECT 1 FROM updated)
+         RETURNING 1
+       )
+       UPDATE collection_pointers cp
+       SET asset_count = cp.asset_count + 1
+       WHERE cp.col = $2
+         AND cp.creator = $3
+         AND EXISTS (SELECT 1 FROM updated)
+         AND (
+           COALESCE((SELECT prev_col FROM previous), '') <> $2
+           OR COALESCE((SELECT prev_creator FROM previous), '') <> $3
+         )`,
+      [asset, pointer, setBy, ctx.slot.toString(), ctx.blockTime.toISOString(), ctx.signature]
     );
   }
 

@@ -10,7 +10,7 @@ function createTestPubkey(seed: number): PublicKey {
 
 // Test keypairs - using valid 32-byte public keys
 export const TEST_PROGRAM_ID = new PublicKey(
-  "8oo48pya1SZD23ZhzoNMhxR2UGb8BRa41Su4qP9EuaWm"
+  "8oo4J9tBB3Hna1jRQ3rWvJjojqM5DYTDJo5cejUuJy3C"
 );
 export const TEST_ASSET = createTestPubkey(1);
 export const TEST_OWNER = createTestPubkey(2);

@@ -1,0 +1,7 @@
+images:
+  repository: ghcr.io/quantulabs/8004-indexer-classic
+  latest:
+    version: ""
+    digest: ""
+    created_at: ""
+  history: []

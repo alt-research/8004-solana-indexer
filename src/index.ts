@@ -80,12 +80,12 @@ async function main() {
   const pool = config.dbMode === "supabase" ? getPool() : null;
   const processor = new Processor(prisma, pool);
 
-  const restEnabled = config.apiMode !== "graphql";
-  const graphqlEnabled = config.apiMode !== "rest" && config.enableGraphql;
-  const canServeRest = restEnabled && !!prisma;
-  const canServeGraphql = graphqlEnabled && !!pool;
+  const wantsRest = config.apiMode !== "graphql";
+  const wantsGraphql = config.apiMode !== "rest" && config.enableGraphql;
+  const canServeRest = wantsRest && !!prisma;
+  const canServeGraphql = wantsGraphql && !!pool;
 
-  if (restEnabled && !prisma) {
+  if (config.apiMode === "rest" && !prisma) {
     logger.fatal(
       { apiMode: config.apiMode, dbMode: config.dbMode },
       "REST mode requires DB_MODE=local (Prisma)"
@@ -93,12 +93,26 @@ async function main() {
     process.exit(1);
   }
 
-  if (graphqlEnabled && !pool) {
+  if (config.apiMode === "graphql" && !pool) {
     logger.fatal(
       { apiMode: config.apiMode, dbMode: config.dbMode },
       "GraphQL mode requires DB_MODE=supabase (PostgreSQL pool)"
     );
     process.exit(1);
+  }
+
+  if (config.apiMode === "both" && wantsRest && !prisma) {
+    logger.warn(
+      { apiMode: config.apiMode, dbMode: config.dbMode },
+      "REST disabled in API_MODE=both because Prisma is unavailable"
+    );
+  }
+
+  if (config.apiMode === "both" && wantsGraphql && !pool) {
+    logger.warn(
+      { apiMode: config.apiMode, dbMode: config.dbMode },
+      "GraphQL disabled in API_MODE=both because Supabase pool is unavailable"
+    );
   }
 
   // Start API server before processor (available during backfill)

@@ -9,6 +9,8 @@ const DOMAIN_FEEDBACK = Buffer.from("8004_FEEDBACK_V1");
 const DOMAIN_RESPONSE = Buffer.from("8004_RESPONSE_V1");
 const DOMAIN_REVOKE = Buffer.from("8004_REVOKE_V1");
 const DOMAIN_LEAF_V1 = Buffer.from("8004_LEAF_V1____");
+const DOMAIN_RESPONSE_LEAF_V1 = Buffer.from("8004_RSP_LEAF_V1");
+const DOMAIN_REVOKE_LEAF_V1 = Buffer.from("8004_RVK_LEAF_V1");
 
 const BATCH_SIZE = 1000;
 const ZERO_DIGEST = Buffer.alloc(32);
@@ -68,8 +70,9 @@ function computeResponseLeaf(
   feedbackHash: Buffer,
   slot: bigint,
 ): Buffer {
-  const data = Buffer.alloc(32 + 32 + 8 + 32 + 32 + 32 + 8);
+  const data = Buffer.alloc(16 + 32 + 32 + 8 + 32 + 32 + 32 + 8);
   let offset = 0;
+  DOMAIN_RESPONSE_LEAF_V1.copy(data, offset); offset += 16;
   asset.copy(data, offset); offset += 32;
   client.copy(data, offset); offset += 32;
   data.writeBigUInt64LE(feedbackIndex, offset); offset += 8;
@@ -87,8 +90,9 @@ function computeRevokeLeaf(
   feedbackHash: Buffer,
   slot: bigint,
 ): Buffer {
-  const data = Buffer.alloc(32 + 32 + 8 + 32 + 8);
+  const data = Buffer.alloc(16 + 32 + 32 + 8 + 32 + 8);
   let offset = 0;
+  DOMAIN_REVOKE_LEAF_V1.copy(data, offset); offset += 16;
   asset.copy(data, offset); offset += 32;
   client.copy(data, offset); offset += 32;
   data.writeBigUInt64LE(feedbackIndex, offset); offset += 8;

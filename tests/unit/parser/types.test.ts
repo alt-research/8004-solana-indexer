@@ -6,9 +6,9 @@ import {
 
 describe("Parser Types", () => {
   describe("EVENT_DISCRIMINATORS", () => {
-    it("should contain all 13 event discriminators", () => {
+    it("should contain all 16 event discriminators", () => {
       const eventNames = Object.keys(EVENT_DISCRIMINATORS);
-      expect(eventNames).toHaveLength(13);
+      expect(eventNames).toHaveLength(16);
     });
 
     it("should have correct event names", () => {
@@ -16,13 +16,16 @@ describe("Parser Types", () => {
         "AgentOwnerSynced",
         "AgentRegistered",
         "AtomEnabled",
+        "CollectionPointerSet",
         "FeedbackRevoked",
         "MetadataDeleted",
         "MetadataSet",
         "NewFeedback",
+        "ParentAssetSet",
         "RegistryInitialized",
         "ResponseAppended",
         "UriUpdated",
+        "WalletResetOnOwnerSync",
         "ValidationRequested",
         "ValidationResponded",
         "WalletUpdated",
@@ -73,6 +76,10 @@ describe("Parser Types", () => {
 
     it("ValidationRequested should have correct discriminator", () => {
       expect(EVENT_DISCRIMINATORS.ValidationRequested).toBe("852afcc65287b741");
+    });
+
+    it("UriUpdated should have correct discriminator", () => {
+      expect(EVENT_DISCRIMINATORS.UriUpdated).toBe("aac74ea73154660b");
     });
   });
 });

@@ -50,8 +50,26 @@ export const agentResolvers = {
     owner(parent: AgentRow) {
       return parent.owner;
     },
+    creator(parent: AgentRow) {
+      return parent.creator;
+    },
     agentWallet(parent: AgentRow) {
       return parent.agent_wallet;
+    },
+    collectionPointer(parent: AgentRow) {
+      return parent.collection_pointer;
+    },
+    colLocked(parent: AgentRow) {
+      return parent.col_locked;
+    },
+    parentAsset(parent: AgentRow) {
+      return parent.parent_asset;
+    },
+    parentCreator(parent: AgentRow) {
+      return parent.parent_creator;
+    },
+    parentLocked(parent: AgentRow) {
+      return parent.parent_locked;
     },
     operators() {
       return [];

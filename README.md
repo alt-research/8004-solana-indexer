@@ -7,7 +7,7 @@ Solana indexer for the 8004 Agent Registry with GraphQL v2 and transitional REST
 - WebSocket + polling ingestion modes
 - Reorg resilience with verification worker
 - GraphQL API (`/v2/graphql`) with query depth/complexity guards
-- Legacy REST v1 (`/rest/v1/*`) still available when `API_MODE=rest|hybrid`
+- Legacy REST v1 (`/rest/v1/*`) available when `API_MODE=rest|both`
 - Supabase/PostgreSQL data backend support
 - Strict events-only integrity policy:
   - revoke/response without parent feedback => `ORPHANED`
@@ -43,7 +43,7 @@ WS_URL=wss://api.devnet.solana.com
 
 Notes:
 
-- `API_MODE=graphql` is default.
+- `API_MODE=both` is default.
 - GraphQL requires `DB_MODE=supabase`.
 - REST v1 requires `DB_MODE=local` (Prisma).
 - `GRAPHQL_STATS_CACHE_TTL_MS` controls `globalStats`/`protocol` aggregate cache TTL (default `60000` ms).
@@ -58,6 +58,41 @@ npm run test:e2e
 npm run check:graphql:coherence
 npm run bench:graphql:sql
 npm run bench:hashchain
+```
+
+## Docker
+
+Build local image:
+
+```bash
+docker build \
+  --build-arg INDEXER_VERSION=$(node -p "require('./package.json').version") \
+  -t 8004-indexer-classic:local .
+```
+
+Run local smoke container:
+
+```bash
+docker run --rm -p 3001:3001 --env-file .env 8004-indexer-classic:local
+```
+
+CI test target in Docker:
+
+```bash
+docker compose -f docker/ci/ci-classic.yml up --build --abort-on-container-exit
+```
+
+Runtime stack (digest-pin friendly):
+
+```bash
+docker compose -f docker/stack/classic-stack.yml up -d
+```
+
+Integrity helpers:
+
+```bash
+scripts/docker/record-digest.sh ghcr.io/quantulabs/8004-indexer-classic v1.6.0 docker/digests.yml
+scripts/docker/verify-image-integrity.sh ghcr.io/quantulabs/8004-indexer-classic v1.6.0
 ```
 
 ## GraphQL Example

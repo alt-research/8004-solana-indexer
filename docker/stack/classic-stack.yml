@@ -1,0 +1,34 @@
+name: 8004-classic-stack
+
+services:
+  indexer:
+    image: ${INDEXER_IMAGE:-ghcr.io/quantulabs/8004-indexer-classic:latest}
+    container_name: 8004-indexer-classic
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-3001}:3001"
+    environment:
+      NODE_ENV: production
+      DB_MODE: ${DB_MODE:-supabase}
+      API_MODE: ${API_MODE:-graphql}
+      API_PORT: 3001
+      RPC_URL: ${RPC_URL:?set RPC_URL}
+      WS_URL: ${WS_URL:?set WS_URL}
+      SUPABASE_DSN: ${SUPABASE_DSN:?set SUPABASE_DSN}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_KEY: ${SUPABASE_KEY:-}
+      INDEXER_MODE: ${INDEXER_MODE:-auto}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      VERIFICATION_ENABLED: ${VERIFICATION_ENABLED:-true}
+      INDEX_METADATA: ${INDEX_METADATA:-normal}
+    volumes:
+      - indexer_data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3001/health').then((r)=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+
+volumes:
+  indexer_data:

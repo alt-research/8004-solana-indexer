@@ -29,6 +29,8 @@ describe("Config", () => {
       delete process.env.WS_RECONNECT_INTERVAL;
       delete process.env.WS_MAX_RETRIES;
       delete process.env.LOG_LEVEL;
+      delete process.env.API_MODE;
+      delete process.env.ENABLE_GRAPHQL;
       delete process.env.INDEX_METADATA;
       delete process.env.PROGRAM_ID;
       delete process.env.GRAPHQL_STATS_CACHE_TTL_MS;
@@ -39,13 +41,14 @@ describe("Config", () => {
       expect(config.rpcUrl).toBe("https://api.devnet.solana.com");
       expect(config.wsUrl).toBe("wss://api.devnet.solana.com");
       // programId comes from SDK (PROGRAM_ID.toBase58()), not env var
-      expect(config.programId).toBe("8oo48pya1SZD23ZhzoNMhxR2UGb8BRa41Su4qP9EuaWm");
+      expect(config.programId).toBe("8oo4J9tBB3Hna1jRQ3rWvJjojqM5DYTDJo5cejUuJy3C");
       expect(config.indexerMode).toBe("auto");
       expect(config.pollingInterval).toBe(5000);
       expect(config.batchSize).toBe(100);
       expect(config.wsReconnectInterval).toBe(3000);
       expect(config.wsMaxRetries).toBe(5);
       expect(config.logLevel).toBe("info");
+      expect(config.apiMode).toBe("both");
       expect(config.graphqlStatsCacheTtlMs).toBe(60000);
     });
 
@@ -59,6 +62,7 @@ describe("Config", () => {
       process.env.WS_RECONNECT_INTERVAL = "5000";
       process.env.WS_MAX_RETRIES = "10";
       process.env.LOG_LEVEL = "debug";
+      process.env.API_MODE = "rest";
       process.env.GRAPHQL_STATS_CACHE_TTL_MS = "45000";
 
       const { config } = await import("../../src/config.js");
@@ -67,13 +71,14 @@ describe("Config", () => {
       expect(config.rpcUrl).toBe("https://custom.rpc.com");
       expect(config.wsUrl).toBe("wss://custom.ws.com");
       // programId always comes from SDK, not configurable via env
-      expect(config.programId).toBe("8oo48pya1SZD23ZhzoNMhxR2UGb8BRa41Su4qP9EuaWm");
+      expect(config.programId).toBe("8oo4J9tBB3Hna1jRQ3rWvJjojqM5DYTDJo5cejUuJy3C");
       expect(config.indexerMode).toBe("polling");
       expect(config.pollingInterval).toBe(10000);
       expect(config.batchSize).toBe(200);
       expect(config.wsReconnectInterval).toBe(5000);
       expect(config.wsMaxRetries).toBe(10);
       expect(config.logLevel).toBe("debug");
+      expect(config.apiMode).toBe("rest");
       expect(config.graphqlStatsCacheTtlMs).toBe(45000);
     });
 
@@ -100,6 +105,25 @@ describe("Config", () => {
 
       await expect(import("../../src/config.js")).rejects.toThrow(
         /Invalid INDEXER_MODE/
+      );
+    });
+
+    it("should normalize legacy API_MODE aliases", async () => {
+      process.env.API_MODE = "hybrid";
+      let imported = await import("../../src/config.js");
+      expect(imported.config.apiMode).toBe("both");
+
+      vi.resetModules();
+      process.env = { ...originalEnv, API_MODE: "graph" };
+      imported = await import("../../src/config.js");
+      expect(imported.config.apiMode).toBe("graphql");
+    });
+
+    it("should throw when API_MODE is invalid", async () => {
+      process.env.API_MODE = "bad_mode";
+
+      await expect(import("../../src/config.js")).rejects.toThrow(
+        /Invalid API_MODE/
       );
     });
 

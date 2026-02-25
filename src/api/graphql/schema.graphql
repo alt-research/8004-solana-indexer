@@ -48,13 +48,19 @@ input AgentFilter {
   id_in: [ID!]
   owner: String
   owner_in: [String!]
+  creator: String
   agentWallet: String
   totalFeedback_gt: BigInt
   totalFeedback_gte: BigInt
   createdAt_gt: BigInt
   createdAt_lt: BigInt
   collection: String
+  collectionPointer: String
+  parentAsset: String
+  parentCreator: String
   atomEnabled: Boolean
+  colLocked: Boolean
+  parentLocked: Boolean
   trustTier_gte: Int
 }
 
@@ -99,7 +105,13 @@ type Agent {
   agentURI: String
   agentURIType: URIType
   owner: String!
+  creator: String
   agentWallet: String
+  collectionPointer: String
+  colLocked: Boolean!
+  parentAsset: String
+  parentCreator: String
+  parentLocked: Boolean!
   operators: [String!]!
   totalFeedback: BigInt!
   lastActivity: BigInt
@@ -291,6 +303,26 @@ type HashChainReplayPage {
   nextFromCount: BigInt!
 }
 
+type CollectionPointer {
+  col: String!
+  creator: String!
+  firstSeenAsset: String!
+  firstSeenAt: BigInt!
+  firstSeenSlot: BigInt!
+  firstSeenTxSignature: String
+  lastSeenAt: BigInt!
+  lastSeenSlot: BigInt!
+  lastSeenTxSignature: String
+  assetCount: BigInt!
+}
+
+type AgentTreeNode {
+  depth: Int!
+  path: [String!]!
+  parentAsset: String
+  agent: Agent!
+}
+
 type Query {
   agent(id: ID!): Agent
   agents(
@@ -350,5 +382,41 @@ type Query {
     toCount: BigInt
     first: Int = 1000
   ): HashChainReplayPage!
+  collectionPointers(
+    first: Int = 100
+    skip: Int = 0
+    col: String
+    creator: String
+  ): [CollectionPointer!]!
+  agentChildren(
+    parent: ID!
+    first: Int = 100
+    skip: Int = 0
+  ): [Agent!]!
+  agentTree(
+    root: ID!
+    maxDepth: Int = 5
+    includeRoot: Boolean = true
+    first: Int = 100
+    skip: Int = 0
+  ): [AgentTreeNode!]!
+  collectionAssetCount(
+    col: String!
+    creator: String
+  ): BigInt!
+  collectionAssets(
+    col: String!
+    creator: String
+    first: Int = 100
+    skip: Int = 0
+    orderBy: AgentOrderBy
+    orderDirection: OrderDirection
+  ): [Agent!]!
+  agentLineage(
+    asset: ID!
+    includeSelf: Boolean = true
+    first: Int = 100
+    skip: Int = 0
+  ): [Agent!]!
 
 }

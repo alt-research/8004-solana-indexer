@@ -6,8 +6,6 @@
 import { Connection, PublicKey } from "@solana/web3.js";
 import { createHash } from "crypto";
 import {
-  PROGRAM_ID as SDK_PROGRAM_ID,
-  ATOM_ENGINE_PROGRAM_ID as SDK_ATOM_PROGRAM_ID,
   MPL_CORE_PROGRAM_ID as SDK_MPL_CORE_PROGRAM_ID,
 } from "8004-solana";
 
@@ -105,9 +103,22 @@ export async function fetchBaseCollection(
   return rootConfig.baseCollection;
 }
 
-// Program IDs from SDK (source of truth)
-export const AGENT_REGISTRY_PROGRAM_ID = SDK_PROGRAM_ID;
-export const ATOM_ENGINE_PROGRAM_ID = SDK_ATOM_PROGRAM_ID;
+const DEFAULT_REGISTRY_PROGRAM_ID = new PublicKey("8oo4J9tBB3Hna1jRQ3rWvJjojqM5DYTDJo5cejUuJy3C");
+const DEFAULT_ATOM_ENGINE_PROGRAM_ID = new PublicKey("AToMufS4QD6hEXvcvBDg9m1AHeCLpmZQsyfYa5h9MwAF");
+
+function resolveProgramId(envValue: string | undefined, fallback: PublicKey): PublicKey {
+  if (!envValue || envValue.trim() === "") return fallback;
+  return new PublicKey(envValue.trim());
+}
+
+export const AGENT_REGISTRY_PROGRAM_ID = resolveProgramId(
+  process.env.PROGRAM_ID,
+  DEFAULT_REGISTRY_PROGRAM_ID
+);
+export const ATOM_ENGINE_PROGRAM_ID = resolveProgramId(
+  process.env.ATOM_ENGINE_PROGRAM_ID,
+  DEFAULT_ATOM_ENGINE_PROGRAM_ID
+);
 export const MPL_CORE_PROGRAM_ID = SDK_MPL_CORE_PROGRAM_ID;
 
 /**

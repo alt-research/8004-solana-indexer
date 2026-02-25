@@ -32,8 +32,8 @@ vi.mock("8004-solana", () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { PublicKey: RealPK } = require("@solana/web3.js");
   return {
-    PROGRAM_ID: new RealPK("8oo48pya1SZD23ZhzoNMhxR2UGb8BRa41Su4qP9EuaWm"),
-    ATOM_ENGINE_PROGRAM_ID: new RealPK("AToM1iKaniUCuWfHd5WQy5aLgJYWMiKq78NtNJmtzSXJ"),
+    PROGRAM_ID: new RealPK("8oo4J9tBB3Hna1jRQ3rWvJjojqM5DYTDJo5cejUuJy3C"),
+    ATOM_ENGINE_PROGRAM_ID: new RealPK("AToMufS4QD6hEXvcvBDg9m1AHeCLpmZQsyfYa5h9MwAF"),
     MPL_CORE_PROGRAM_ID: new RealPK("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"),
   };
 });
@@ -65,7 +65,7 @@ function mockAccountInfo(data: Buffer) {
     data,
     executable: false,
     lamports: 1_000_000,
-    owner: new PublicKey("8oo48pya1SZD23ZhzoNMhxR2UGb8BRa41Su4qP9EuaWm"),
+    owner: new PublicKey("8oo4J9tBB3Hna1jRQ3rWvJjojqM5DYTDJo5cejUuJy3C"),
     rentEpoch: 0,
   };
 }

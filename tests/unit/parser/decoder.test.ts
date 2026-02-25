@@ -33,13 +33,13 @@ describe("Parser Decoder", () => {
   describe("IDL loading", () => {
     it("should load IDL successfully", () => {
       expect(idl).toBeDefined();
-      expect(idl.address).toBe("8oo48pya1SZD23ZhzoNMhxR2UGb8BRa41Su4qP9EuaWm");
+      expect(idl.address).toBe("8oo4J9tBB3Hna1jRQ3rWvJjojqM5DYTDJo5cejUuJy3C");
     });
 
     it("should have events defined in IDL", () => {
       expect(idl.events).toBeDefined();
       expect(Array.isArray(idl.events)).toBe(true);
-      expect(idl.events!.length).toBe(11);
+      expect(idl.events!.length).toBe(14);
     });
 
     it("should export IDL_VERSION from metadata", () => {
@@ -50,7 +50,7 @@ describe("Parser Decoder", () => {
 
     it("should export IDL_PROGRAM_ID from IDL address", () => {
       expect(IDL_PROGRAM_ID).toBeDefined();
-      expect(IDL_PROGRAM_ID).toBe("8oo48pya1SZD23ZhzoNMhxR2UGb8BRa41Su4qP9EuaWm");
+      expect(IDL_PROGRAM_ID).toBe("8oo4J9tBB3Hna1jRQ3rWvJjojqM5DYTDJo5cejUuJy3C");
     });
 
     it("should fallback IDL_VERSION to 'unknown' when metadata.version is missing", () => {
@@ -352,6 +352,63 @@ describe("Parser Decoder", () => {
       expect(result).not.toBeNull();
       expect(result!.data.oldWallet).not.toBeNull();
       expect(result!.data.oldWallet!.toBase58()).toBe(oldWallet.toBase58());
+    });
+
+    it("should convert WalletResetOnOwnerSync event", () => {
+      const event = {
+        name: "WalletResetOnOwnerSync",
+        data: {
+          asset: TEST_ASSET.toBase58(),
+          old_wallet: TEST_WALLET.toBase58(),
+          new_wallet: TEST_WALLET.toBase58(),
+          owner_after_sync: TEST_NEW_OWNER.toBase58(),
+        },
+      };
+
+      const result = toTypedEvent(event);
+
+      expect(result).not.toBeNull();
+      expect(result!.type).toBe("WalletResetOnOwnerSync");
+      expect(result!.data.ownerAfterSync.toBase58()).toBe(TEST_NEW_OWNER.toBase58());
+      expect(result!.data.newWallet.toBase58()).toBe(TEST_WALLET.toBase58());
+    });
+
+    it("should convert CollectionPointerSet event", () => {
+      const event = {
+        name: "CollectionPointerSet",
+        data: {
+          asset: TEST_ASSET.toBase58(),
+          set_by: TEST_OWNER.toBase58(),
+          col: "c1:bafybeigdyrzt",
+        },
+      };
+
+      const result = toTypedEvent(event);
+
+      expect(result).not.toBeNull();
+      expect(result!.type).toBe("CollectionPointerSet");
+      expect(result!.data.setBy.toBase58()).toBe(TEST_OWNER.toBase58());
+      expect(result!.data.col).toBe("c1:bafybeigdyrzt");
+    });
+
+    it("should convert ParentAssetSet event", () => {
+      const parentAsset = new PublicKey(new Uint8Array(32).fill(11));
+      const event = {
+        name: "ParentAssetSet",
+        data: {
+          asset: TEST_ASSET.toBase58(),
+          parent_asset: parentAsset.toBase58(),
+          parent_creator: TEST_OWNER.toBase58(),
+          set_by: TEST_OWNER.toBase58(),
+        },
+      };
+
+      const result = toTypedEvent(event);
+
+      expect(result).not.toBeNull();
+      expect(result!.type).toBe("ParentAssetSet");
+      expect(result!.data.parentAsset.toBase58()).toBe(parentAsset.toBase58());
+      expect(result!.data.parentCreator.toBase58()).toBe(TEST_OWNER.toBase58());
     });
 
     it("should convert MetadataSet event", () => {

@@ -124,7 +124,7 @@ export function getPool(): Pool {
     }
     pool = new Pool({
       connectionString: config.supabaseDsn,
-      ssl: { rejectUnauthorized: config.supabaseSslVerify },
+      ssl: config.supabaseSslVerify ? { rejectUnauthorized: true } : false,
       max: 10,
       connectionTimeoutMillis: 10000, // 10s timeout
       idleTimeoutMillis: 30000,

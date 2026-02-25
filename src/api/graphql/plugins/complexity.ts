@@ -5,7 +5,7 @@ import {
   visit,
 } from 'graphql';
 
-const MAX_COMPLEXITY = 500;
+const MAX_COMPLEXITY = parseInt(process.env.GRAPHQL_MAX_COMPLEXITY || '5000', 10);
 const MAX_ALIASES = 10;
 
 const FIELD_COSTS: Record<string, number> = {
@@ -38,11 +38,11 @@ function getFirstArg(node: FieldNode): number {
   const firstArg = node.arguments?.find(a => a.name.value === 'first');
   if (!firstArg) return 100;
   if (firstArg.value.kind === Kind.INT) {
-    return Math.min(parseInt(firstArg.value.value, 10), 250);
+    return Math.min(parseInt(firstArg.value.value, 10), 1000);
   }
   if (firstArg.value.kind === Kind.VARIABLE) {
     // Variables are unknown at parse-time; assume worst-case page size.
-    return 250;
+    return 1000;
   }
   return 100;
 }

@@ -12,7 +12,7 @@ const ORDER_MAP_AGENT: Record<string, string> = {
   totalFeedback: 'feedback_count',
   qualityScore: 'quality_score',
   trustTier: 'trust_tier',
-  globalId: 'global_id',
+  agentid: 'global_id',
 };
 
 const ORDER_MAP_FEEDBACK: Record<string, string> = {

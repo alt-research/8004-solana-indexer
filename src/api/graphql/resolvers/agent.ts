@@ -41,10 +41,10 @@ export const agentResolvers = {
     agentId(parent: AgentRow) {
       return numericAgentId(parent.asset).toString();
     },
-    globalId(parent: AgentRow) {
-      return parent.global_id;
+    agentid(parent: AgentRow) {
+      return parent.global_id !== null ? String(parent.global_id) : null;
     },
-    globalIdFormatted(parent: AgentRow) {
+    agentidFormatted(parent: AgentRow) {
       if (!parent.global_id) return null;
       const id = parseInt(parent.global_id, 10);
       if (isNaN(id)) return null;

@@ -242,7 +242,7 @@ function mapAgentToApi(a: AgentApiRow): Record<string, unknown> {
     diversity_ratio: a.diversityRatio,
     feedback_count: a.feedbackCount,
     raw_avg_score: a.rawAvgScore,
-    global_id: a.globalId ? Number(a.globalId) : null,
+    agentid: a.globalId !== null ? a.globalId.toString() : null,
     status: a.status,
     verified_at: a.verifiedAt?.toISOString() || null,
     created_at: a.createdAt.toISOString(),

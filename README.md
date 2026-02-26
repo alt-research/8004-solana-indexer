@@ -39,6 +39,20 @@ Canonical API docs are maintained in:
 - https://github.com/QuantuLabs/8004-solana-api/blob/main/docs/collections.md
 - https://github.com/QuantuLabs/8004-solana-api/tree/main/docs/examples
 
+## Agent ID Model
+
+The API intentionally exposes multiple identifiers:
+
+- `id` (GraphQL): canonical opaque id (`sol:<asset>`), used for entity references.
+- `agentId` (GraphQL): deterministic numeric id derived from the asset public key bytes (first 8 bytes, big-endian).
+- `agentid` (GraphQL + REST): registry global id backed by DB `global_id` (`uint64` semantic).
+- `agentidFormatted` (GraphQL): display format of `agentid` (for example `#042`).
+
+Precision note:
+
+- `agentid` is serialized as `string` in API responses to avoid JSON `number` precision loss beyond `2^53-1`.
+- GraphQL filters/order for this field use `agentid`, `agentid_gt`, `agentid_lt`, `agentid_gte`, `agentid_lte`, and `orderBy: agentid`.
+
 ## Required Environment
 
 ```bash

@@ -9,7 +9,6 @@ coverage
 .idea
 *.log
 *.md
-tests
 scripts
 Dockerfile*
 docker

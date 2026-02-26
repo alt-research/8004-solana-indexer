@@ -193,15 +193,12 @@ describe("E2E: Localnet Verification", () => {
       const assetAccountConfirmed = await connection.getAccountInfo(testAsset.publicKey, { commitment: "confirmed" });
       console.log("Asset at confirmed:", assetAccountConfirmed ? `${assetAccountConfirmed.data.length} bytes` : "NULL");
 
-      // Wait for finalization on localnet (can take several seconds)
+      // Wait for finalization on the same PDA that verifier checks.
+      // Local validators can be slow when program cloning/deploying.
       console.log("Waiting for finalization...");
-      const finalized = await waitForFinalization(connection, testAsset.publicKey, 15000);
+      const finalized = await waitForFinalization(connection, agentPda, 45000);
       console.log("Asset finalized:", finalized);
-      // Keep test resilient on slow/loaded local validators. The verifier
-      // itself will still check existence at finalized commitment.
-      if (!finalized) {
-        console.log("Asset not finalized within timeout, continuing with verifier check");
-      }
+      expect(finalized).toBe(true);
 
       // Create PENDING entry in DB (simulating indexer ingestion)
       const agentId = testAsset.publicKey.toBase58();

@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INDEXER_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+cleanup() {
+  if [[ "${KEEP_LOCALNET:-0}" != "1" ]]; then
+    echo "[localnet] stopping validator"
+    "$SCRIPT_DIR/localnet-stop.sh"
+  else
+    echo "[localnet] KEEP_LOCALNET=1 -> validator left running"
+  fi
+}
+
+trap cleanup EXIT INT TERM
+
+echo "[localnet] stopping any stale validator"
+"$SCRIPT_DIR/localnet-stop.sh"
+
+echo "[localnet] starting validator"
+"$SCRIPT_DIR/localnet-start.sh"
+
+echo "[localnet] initializing localnet state"
+"$SCRIPT_DIR/localnet-init.sh"
+
+echo "[localnet] running indexer Localnet E2E"
+(
+  cd "$INDEXER_ROOT"
+  RUN_LOCALNET_E2E=1 bunx vitest run --config vitest.e2e.config.ts -t "Localnet"
+)

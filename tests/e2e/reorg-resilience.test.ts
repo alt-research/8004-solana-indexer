@@ -1373,7 +1373,7 @@ describe("E2E: Reorg Resilience", () => {
             client: TEST_CLIENT.toBase58(),
             feedbackIndex: BigInt(i),
             score: 50 + i,
-            value: BigInt(5000 + i),
+            value: (5000 + i).toString(),
             valueDecimals: 2,
             tag1: `multi_cascade_${i}`,
             tag2: "",

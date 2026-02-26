@@ -15,7 +15,9 @@ process.env.RPC_URL =
   process.env.RPC_URL ||
   "https://api.devnet.solana.com";
 process.env.WS_URL = process.env.WS_URL || "wss://api.devnet.solana.com";
-process.env.PROGRAM_ID = process.env.PROGRAM_ID || "3GGkAWC3mYYdud8GVBsKXK5QC9siXtFkWVZFYtbueVbC";
+process.env.PROGRAM_ID = process.env.PROGRAM_ID || "8oo4J9tBB3Hna1jRQ3rWvJjojqM5DYTDJo5cejUuJy3C";
+process.env.ATOM_ENGINE_PROGRAM_ID =
+  process.env.ATOM_ENGINE_PROGRAM_ID || "AToMufS4QD6hEXvcvBDg9m1AHeCLpmZQsyfYa5h9MwAF";
 process.env.LOG_LEVEL = "silent";
 process.env.INDEXER_MODE = "polling";
 process.env.DB_MODE = "local";

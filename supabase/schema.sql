@@ -566,16 +566,16 @@ CREATE POLICY "Public read agent_digest_cache" ON agent_digest_cache FOR SELECT 
 
 -- =============================================
 -- DETERMINISTIC ORDERING INDEXES
--- Use (block_slot, tx_signature) for consistent re-indexing
+-- Use (block_slot, tx_index NULLS LAST, tx_signature) for consistent re-indexing
 -- =============================================
 
 -- Feedback ordering: deterministic per client
 CREATE INDEX idx_feedbacks_deterministic_order
-ON feedbacks(asset, client_address, block_slot, tx_signature);
+ON feedbacks(asset, client_address, block_slot, tx_index NULLS LAST, tx_signature);
 
 -- Feedback ordering: global within agent
 CREATE INDEX idx_feedbacks_global_order
-ON feedbacks(asset, block_slot, tx_signature);
+ON feedbacks(asset, block_slot, tx_index NULLS LAST, tx_signature);
 
 -- Grant read access to metadata views
 GRANT SELECT ON metadata_decoded TO anon;

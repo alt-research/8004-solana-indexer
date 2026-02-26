@@ -27,6 +27,7 @@ import {
 } from "@solana/web3.js";
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
+import { Prisma } from "@prisma/client";
 import { getAgentPda, getRegistryConfigPda, getRootConfigPda } from "../../src/utils/pda.js";
 import { prisma } from "./setup.js";
 import * as fs from "fs";
@@ -45,6 +46,18 @@ function loadWallet(): Keypair {
   const walletPath = path.join(process.env.HOME || "~", ".config/solana/id.json");
   const secretKey = JSON.parse(fs.readFileSync(walletPath, "utf-8"));
   return Keypair.fromSecretKey(new Uint8Array(secretKey));
+}
+
+function sortAgentsDeterministically<T extends { slot: number; txIndex: number | null; signature: string }>(
+  agents: T[]
+): T[] {
+  return [...agents].sort((a, b) => {
+    if (a.slot !== b.slot) return a.slot - b.slot;
+    const txA = a.txIndex ?? Number.MAX_SAFE_INTEGER;
+    const txB = b.txIndex ?? Number.MAX_SAFE_INTEGER;
+    if (txA !== txB) return txA - txB;
+    return a.signature.localeCompare(b.signature);
+  });
 }
 
 /**
@@ -286,13 +299,7 @@ describe("E2E: Localnet Deterministic Ordering", () => {
   describe("3. DB Ingestion & global_id Assignment", () => {
     it("should ingest agents with correct tx_index into DB", async () => {
       // Sort agents in deterministic order for insertion
-      const sorted = [...registeredAgents].sort((a, b) => {
-        if (a.slot !== b.slot) return a.slot - b.slot;
-        const txA = a.txIndex ?? Number.MAX_SAFE_INTEGER;
-        const txB = b.txIndex ?? Number.MAX_SAFE_INTEGER;
-        if (txA !== txB) return txA - txB;
-        return a.signature.localeCompare(b.signature);
-      });
+      const sorted = sortAgentsDeterministically(registeredAgents);
 
       // Insert agents in deterministic order (simulating indexer ingestion)
       for (const agent of sorted) {
@@ -332,37 +339,62 @@ describe("E2E: Localnet Deterministic Ordering", () => {
     }, 30000);
 
     it("should order agents deterministically from DB using composite key", async () => {
-      // Query agents in deterministic order (matching SQL: ORDER BY block_slot, tx_index NULLS LAST, tx_signature)
-      const dbAgents = await prisma.agent.findMany({
-        where: {
-          id: { in: registeredAgents.map((a) => a.assetId) },
+      // Inject one synthetic row with NULL tx_index to enforce NULLS LAST coverage.
+      const base = registeredAgents[0];
+      if (!base) return;
+
+      const nullTxAgentId = Keypair.generate().publicKey.toBase58();
+      const nullTxSignature = "zzzz-null-tx-index-ordering-test";
+
+      await prisma.agent.create({
+        data: {
+          id: nullTxAgentId,
+          owner: wallet.publicKey.toBase58(),
+          uri: "https://test.localnet/null-tx-index.json",
+          nftName: "Agent Null TxIndex",
+          collection: collectionPubkey.toBase58(),
+          registry: registryConfigPda.toBase58(),
+          atomEnabled: true,
+          status: "PENDING",
+          createdSlot: BigInt(base.slot),
+          createdTxSignature: nullTxSignature,
+          txIndex: null,
         },
-        orderBy: [
-          { createdSlot: "asc" },
-          { txIndex: "asc" },
-          { createdTxSignature: "asc" },
-        ],
       });
 
-      // Compare with JS sort
-      const jsSorted = [...registeredAgents].sort((a, b) => {
-        if (a.slot !== b.slot) return a.slot - b.slot;
-        const txA = a.txIndex ?? Number.MAX_SAFE_INTEGER;
-        const txB = b.txIndex ?? Number.MAX_SAFE_INTEGER;
-        if (txA !== txB) return txA - txB;
-        return a.signature.localeCompare(b.signature);
-      });
+      const ids = [...registeredAgents.map((a) => a.assetId), nullTxAgentId];
+      const dbOrdered = await prisma.$queryRaw<Array<{ id: string }>>`
+        SELECT id
+        FROM "Agent"
+        WHERE id IN (${Prisma.join(ids)})
+        ORDER BY "createdSlot" ASC,
+                 CASE WHEN "txIndex" IS NULL THEN 1 ELSE 0 END ASC,
+                 "txIndex" ASC,
+                 "createdTxSignature" ASC
+      `;
 
-      // Note: SQLite sorts NULLs differently than PostgreSQL NULLS LAST.
-      // In production (PostgreSQL), we use explicit NULLS LAST.
-      // In SQLite, NULLs sort first by default in ASC order.
-      // Since all our test agents have non-null txIndex, this should match.
-      const allHaveTxIndex = registeredAgents.every((a) => a.txIndex !== null);
-      if (allHaveTxIndex) {
-        expect(dbAgents.map((a) => a.id)).toEqual(jsSorted.map((a) => a.assetId));
-      } else {
-        console.log("Skipping strict DB/JS comparison: some agents have NULL tx_index (SQLite sorts NULLs differently)");
-      }
+      const expected = sortAgentsDeterministically([
+        ...registeredAgents,
+        {
+          assetId: nullTxAgentId,
+          signature: nullTxSignature,
+          slot: base.slot,
+          txIndex: null,
+        },
+      ]);
+
+      expect(dbOrdered.map((a) => a.id)).toEqual(expected.map((a) => a.assetId));
+
+      const sameSlotOrdered = dbOrdered
+        .map((row) => row.id)
+        .filter((id) => {
+          if (id === nullTxAgentId) return true;
+          const agent = registeredAgents.find((a) => a.assetId === id);
+          return agent?.slot === base.slot;
+        });
+      expect(sameSlotOrdered[sameSlotOrdered.length - 1]).toBe(nullTxAgentId);
+
+      await prisma.agent.deleteMany({ where: { id: nullTxAgentId } });
     });
   });
 
@@ -403,29 +435,15 @@ describe("E2E: Localnet Deterministic Ordering", () => {
       }
 
       // Verify sort order matches
-      const originalSort = [...registeredAgents]
-        .sort((a, b) => {
-          if (a.slot !== b.slot) return a.slot - b.slot;
-          const txA = a.txIndex ?? Number.MAX_SAFE_INTEGER;
-          const txB = b.txIndex ?? Number.MAX_SAFE_INTEGER;
-          if (txA !== txB) return txA - txB;
-          return a.signature.localeCompare(b.signature);
-        })
-        .map((a) => a.assetId);
+      const originalSort = sortAgentsDeterministically(registeredAgents).map((a) => a.assetId);
 
-      const reResolvedSort = [...reResolved]
+      const reResolvedSort = sortAgentsDeterministically(
+        [...reResolved]
         .map((r) => {
           const orig = registeredAgents.find((a) => a.assetId === r.assetId)!;
           return { ...orig, txIndex: r.txIndex };
         })
-        .sort((a, b) => {
-          if (a.slot !== b.slot) return a.slot - b.slot;
-          const txA = a.txIndex ?? Number.MAX_SAFE_INTEGER;
-          const txB = b.txIndex ?? Number.MAX_SAFE_INTEGER;
-          if (txA !== txB) return txA - txB;
-          return a.signature.localeCompare(b.signature);
-        })
-        .map((a) => a.assetId);
+      ).map((a) => a.assetId);
 
       expect(reResolvedSort).toEqual(originalSort);
     }, 30000);
@@ -494,6 +512,9 @@ describe("E2E: Localnet Deterministic Ordering", () => {
           txIndex: 0,
         },
       });
+
+      const orphan = await prisma.agent.findUnique({ where: { id: fakeId } });
+      expect(orphan?.globalId).toBeNull();
 
       // Query non-orphaned agents — orphaned should be excluded
       const activeAgents = await prisma.agent.findMany({
@@ -579,6 +600,156 @@ describe("E2E: Localnet Deterministic Ordering", () => {
       const sameSlotAgents = sorted.filter((a) => a.slot === wsAgent.slot);
       const lastAgent = sameSlotAgents[sameSlotAgents.length - 1];
       expect(lastAgent.txIndex).toBeNull();
+    });
+
+    it("WebSocket fallback should order multiple NULL tx_index by signature", () => {
+      const base = registeredAgents[0];
+      if (!base) return;
+
+      const wsA = {
+        ...base,
+        assetId: `${base.assetId}-ws-a`,
+        txIndex: null,
+        signature: "Bsig-ordered-middle",
+      };
+      const wsB = {
+        ...base,
+        assetId: `${base.assetId}-ws-b`,
+        txIndex: null,
+        signature: "Asig-ordered-first",
+      };
+      const wsC = {
+        ...base,
+        assetId: `${base.assetId}-ws-c`,
+        txIndex: null,
+        signature: "Zsig-ordered-last",
+      };
+
+      const sorted = [...registeredAgents, wsA, wsB, wsC].sort((a, b) => {
+        if (a.slot !== b.slot) return a.slot - b.slot;
+        const txA = a.txIndex ?? Number.MAX_SAFE_INTEGER;
+        const txB = b.txIndex ?? Number.MAX_SAFE_INTEGER;
+        if (txA !== txB) return txA - txB;
+        return a.signature.localeCompare(b.signature);
+      });
+
+      const nullGroup = sorted
+        .filter((a) => a.slot === base.slot && a.txIndex === null)
+        .map((a) => a.signature);
+
+      expect(nullGroup).toEqual([
+        "Asig-ordered-first",
+        "Bsig-ordered-middle",
+        "Zsig-ordered-last",
+      ]);
+    });
+  });
+
+  // =========================================================================
+  // 8. Feedback Ordering (DB)
+  // =========================================================================
+
+  describe("8. Feedback Deterministic Ordering", () => {
+    it("should order feedbacks by (createdSlot, txIndex NULLS LAST, createdTxSignature)", async () => {
+      const base = registeredAgents[0];
+      if (!base) return;
+
+      const client = wallet.publicKey.toBase58();
+      const seed = Date.now().toString();
+
+      const specs: Array<{
+        feedbackIndex: bigint;
+        createdSlot: bigint;
+        txIndex: number | null;
+        createdTxSignature: string;
+      }> = [
+        {
+          feedbackIndex: BigInt(`${seed}1`),
+          createdSlot: BigInt(base.slot),
+          txIndex: 1,
+          createdTxSignature: "sig-b-middle",
+        },
+        {
+          feedbackIndex: BigInt(`${seed}2`),
+          createdSlot: BigInt(base.slot),
+          txIndex: null,
+          createdTxSignature: "sig-z-null-last",
+        },
+        {
+          feedbackIndex: BigInt(`${seed}3`),
+          createdSlot: BigInt(base.slot),
+          txIndex: 0,
+          createdTxSignature: "sig-a-first",
+        },
+        {
+          feedbackIndex: BigInt(`${seed}4`),
+          createdSlot: BigInt(base.slot + 1),
+          txIndex: null,
+          createdTxSignature: "sig-next-slot",
+        },
+      ];
+
+      const rows: Array<{
+        id: string;
+        feedbackIndex: bigint;
+        createdSlot: bigint;
+        txIndex: number | null;
+        createdTxSignature: string;
+      }> = [];
+
+      for (const spec of specs) {
+        const created = await prisma.feedback.create({
+          data: {
+            agentId: base.assetId,
+            client,
+            feedbackIndex: spec.feedbackIndex,
+            value: "100",
+            valueDecimals: 18,
+            score: 80,
+            tag1: "quality",
+            tag2: "accuracy",
+            endpoint: "https://example.test",
+            feedbackUri: `ipfs://feedback-${seed}-${spec.feedbackIndex.toString()}`,
+            createdSlot: spec.createdSlot,
+            createdTxSignature: spec.createdTxSignature,
+            txIndex: spec.txIndex,
+            status: "PENDING",
+          },
+        });
+
+        rows.push({
+          id: created.id,
+          feedbackIndex: spec.feedbackIndex,
+          createdSlot: spec.createdSlot,
+          txIndex: spec.txIndex,
+          createdTxSignature: spec.createdTxSignature,
+        });
+      }
+
+      const ids = rows.map((r) => r.id);
+      const dbOrdered = await prisma.$queryRaw<Array<{ id: string }>>`
+        SELECT id
+        FROM "Feedback"
+        WHERE id IN (${Prisma.join(ids)})
+        ORDER BY "createdSlot" ASC,
+                 CASE WHEN "txIndex" IS NULL THEN 1 ELSE 0 END ASC,
+                 "txIndex" ASC,
+                 "createdTxSignature" ASC
+      `;
+
+      const expected = [...rows]
+        .sort((a, b) => {
+          if (a.createdSlot !== b.createdSlot) return Number(a.createdSlot - b.createdSlot);
+          const txA = a.txIndex ?? Number.MAX_SAFE_INTEGER;
+          const txB = b.txIndex ?? Number.MAX_SAFE_INTEGER;
+          if (txA !== txB) return txA - txB;
+          return a.createdTxSignature.localeCompare(b.createdTxSignature);
+        })
+        .map((r) => r.id);
+
+      expect(dbOrdered.map((r) => r.id)).toEqual(expected);
+
+      await prisma.feedback.deleteMany({ where: { id: { in: ids } } });
     });
   });
 });

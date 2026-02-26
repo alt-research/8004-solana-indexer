@@ -36,6 +36,13 @@ export interface WalletUpdated {
   updatedBy: PublicKey;
 }
 
+export interface WalletResetOnOwnerSync {
+  asset: PublicKey;
+  oldWallet: PublicKey | null;
+  newWallet: PublicKey;
+  ownerAfterSync: PublicKey;
+}
+
 export interface MetadataSet {
   asset: PublicKey;
   key: string;
@@ -52,6 +59,19 @@ export interface MetadataDeleted {
 export interface RegistryInitialized {
   collection: PublicKey;
   authority: PublicKey;
+}
+
+export interface CollectionPointerSet {
+  asset: PublicKey;
+  setBy: PublicKey;
+  col: string;
+}
+
+export interface ParentAssetSet {
+  asset: PublicKey;
+  parentAsset: PublicKey;
+  parentCreator: PublicKey;
+  setBy: PublicKey;
 }
 
 export interface NewFeedback {
@@ -138,9 +158,12 @@ export type ProgramEvent =
   | { type: "AgentOwnerSynced"; data: AgentOwnerSynced }
   | { type: "UriUpdated"; data: UriUpdated }
   | { type: "WalletUpdated"; data: WalletUpdated }
+  | { type: "WalletResetOnOwnerSync"; data: WalletResetOnOwnerSync }
   | { type: "MetadataSet"; data: MetadataSet }
   | { type: "MetadataDeleted"; data: MetadataDeleted }
   | { type: "RegistryInitialized"; data: RegistryInitialized }
+  | { type: "CollectionPointerSet"; data: CollectionPointerSet }
+  | { type: "ParentAssetSet"; data: ParentAssetSet }
   | { type: "NewFeedback"; data: NewFeedback }
   | { type: "FeedbackRevoked"; data: FeedbackRevoked }
   | { type: "ResponseAppended"; data: ResponseAppended }
@@ -153,13 +176,16 @@ export const EVENT_DISCRIMINATORS: Record<string, string> = {
   AgentOwnerSynced: "65e4b8fc14b946f9",
   AgentRegistered: "bf4ed936e864bd55",
   AtomEnabled: "f6b3aedf616e4ac8",
+  CollectionPointerSet: "fb81d67bbcb7add4",
   FeedbackRevoked: "cd101f5e36651007",
   MetadataDeleted: "fbf4993f23fc8336",
   MetadataSet: "be7d47770e1f1ac5",
   NewFeedback: "0ea23ac2832a0b95",
+  ParentAssetSet: "2ed77123a6abc6a0",
   RegistryInitialized: "908a3e693a2664b1",
   ResponseAppended: "a8a9d6c1ab01e87b",
-  UriUpdated: "aac74ea731546602",
+  UriUpdated: "aac74ea73154660b",
+  WalletResetOnOwnerSync: "c13e966f3ddaa9df",
   ValidationRequested: "852afcc65287b741",
   ValidationResponded: "5d3ff665d4d035a7",
   WalletUpdated: "d7220a3b1872c981",

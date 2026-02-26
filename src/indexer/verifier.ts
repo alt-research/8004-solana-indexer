@@ -1293,16 +1293,25 @@ export class DataVerifier {
       if (!accountInfo) return null;
 
       const data = accountInfo.data;
-      // Minimum: discriminator(8) + collection(32) + owner(32) + asset(32) + bump(1) + atom_enabled(1) + Option::None(1) + 3*(digest(32)+count(8)) = 227
-      if (data.length < 227) return null;
+      // Support both v0.6.x (includes creator pubkey) and legacy layouts.
+      const baseOffsets = [
+        8 + 32 + 32 + 32 + 32 + 1 + 1, // discriminator + collection + creator + owner + asset + bump + atom_enabled
+        8 + 32 + 32 + 32 + 1 + 1,      // legacy: discriminator + collection + owner + asset + bump + atom_enabled
+      ];
 
-      // Skip discriminator(8) + collection(32) + owner(32) + asset(32) + bump(1) + atom_enabled(1) + agent_wallet Option<Pubkey>
-      let offset = 8 + 32 + 32 + 32 + 1 + 1;
-      const optionTag = data[offset];
-      offset += optionTag === 1 ? 33 : 1;
+      let offset = -1;
+      for (const baseOffset of baseOffsets) {
+        if (data.length < baseOffset + 1) continue;
+        const optionTag = data[baseOffset];
+        if (optionTag !== 0 && optionTag !== 1) continue;
+        const candidate = baseOffset + (optionTag === 1 ? 33 : 1);
+        if (data.length >= candidate + 120) {
+          offset = candidate;
+          break;
+        }
+      }
 
-      // Verify buffer has enough data for 3 digest+count triplets (3 * 40 = 120 bytes)
-      if (data.length < offset + 120) return null;
+      if (offset < 0) return null;
 
       // Read digest+count triplets (feedback, response, revoke)
       const feedbackDigest = data.slice(offset, offset + 32);

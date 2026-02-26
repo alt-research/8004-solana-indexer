@@ -1,9 +1,9 @@
 import type { GraphQLContext } from '../context.js';
-import { decodeFeedbackId, decodeResponseId, decodeValidationId, decodeAgentId } from '../utils/ids.js';
+import { decodeFeedbackId, decodeResponseId, decodeAgentId } from '../utils/ids.js';
 import { clampFirst, clampSkip, MAX_FIRST } from '../utils/pagination.js';
 import { buildWhereClause } from '../utils/filters.js';
 import { createBadUserInputError } from '../utils/errors.js';
-import type { AgentRow, FeedbackRow, ResponseRow, ValidationRow } from '../dataloaders.js';
+import type { AgentRow, FeedbackRow, ResponseRow } from '../dataloaders.js';
 import { config } from '../../../config.js';
 
 const ORDER_MAP_AGENT: Record<string, string> = {
@@ -24,10 +24,79 @@ const ORDER_MAP_RESPONSE: Record<string, string> = {
   createdAt: 'created_at',
 };
 
+const MAX_TREE_DEPTH = 8;
+const MAX_LINEAGE_DEPTH = 32;
+const MAX_AGENT_PAGE_SIZE = 1000;
+
+const AGENT_SELECT_WITH_DIGESTS = `a.asset,
+                          a.owner,
+                          a.creator,
+                          a.agent_uri,
+                          a.agent_wallet,
+                          a.collection,
+                          a.canonical_col AS collection_pointer,
+                          a.col_locked,
+                          a.parent_asset,
+                          a.parent_creator,
+                          a.parent_locked,
+                          a.nft_name,
+                          a.atom_enabled,
+                          a.trust_tier,
+                          a.quality_score,
+                          a.confidence,
+                          a.risk_score,
+                          a.diversity_ratio,
+                          a.sort_key,
+                          a.status,
+                          a.verified_at,
+                          a.created_at,
+                          a.updated_at,
+                          a.tx_signature AS created_tx_signature,
+                          a.block_slot::text AS created_slot,
+                          adc.feedback_digest::text AS feedback_digest,
+                          adc.response_digest::text AS response_digest,
+                          adc.revoke_digest::text AS revoke_digest,
+                          COALESCE(adc.digest_feedback_count::text, a.feedback_count::text, '0') AS feedback_count,
+                          COALESCE(adc.digest_response_count::text, '0') AS response_count,
+                          COALESCE(adc.digest_revoke_count::text, '0') AS revoke_count`;
+
 interface DecodedCursor {
   created_at: string;
   asset?: string;
   id?: string;
+}
+
+interface CollectionRow {
+  col: string;
+  creator: string;
+  first_seen_asset: string;
+  first_seen_at: string;
+  first_seen_slot: string;
+  first_seen_tx_signature: string | null;
+  last_seen_at: string;
+  last_seen_slot: string;
+  last_seen_tx_signature: string | null;
+  asset_count: string;
+  version: string | null;
+  name: string | null;
+  symbol: string | null;
+  description: string | null;
+  image: string | null;
+  banner_image: string | null;
+  social_website: string | null;
+  social_x: string | null;
+  social_discord: string | null;
+  metadata_status: string | null;
+  metadata_hash: string | null;
+  metadata_bytes: string | null;
+  metadata_updated_at: string | null;
+}
+
+interface AgentTreeNodeRow {
+  asset: string;
+  parent_asset: string | null;
+  path: string[];
+  depth: number;
 }
 
 interface AggregatedStats {
@@ -75,6 +144,29 @@ function assertCursorOrderCompatibility(after: string | undefined, orderCol: str
   if (after && orderCol !== 'created_at') {
     throw createBadUserInputError('The after cursor is only supported when orderBy is createdAt.');
   }
+}
+
+function resolveAssetId(input: string): string {
+  return decodeAgentId(input) ?? input;
+}
+
+function clampTreeDepth(depth: number | undefined): number {
+  if (depth === undefined || depth === null || Number.isNaN(depth)) return 5;
+  if (depth < 0) return 0;
+  return Math.min(depth, MAX_TREE_DEPTH);
+}
+
+function clampAgentPageSize(first: number | undefined): number {
+  if (first === undefined || first === null || Number.isNaN(first) || first <= 0) return 100;
+  return Math.min(first, MAX_AGENT_PAGE_SIZE);
+}
+
+function resolveAgentOrderColumn(orderBy: string | undefined): string {
+  return ORDER_MAP_AGENT[orderBy ?? 'createdAt'] ?? 'created_at';
+}
+
+function toUnixTimestamp(dateStr: string): string {
+  return String(Math.floor(new Date(dateStr).getTime() / 1000));
 }
 
 async function fetchAggregatedStats(ctx: GraphQLContext): Promise<AggregatedStats> {
@@ -175,7 +267,7 @@ export const queryResolvers = {
       const first = clampFirst(args.first);
       const skip = clampSkip(args.skip);
       const dir = resolveDirection(args.orderDirection);
-      const orderCol = ORDER_MAP_AGENT[args.orderBy ?? 'createdAt'] ?? 'created_at';
+      const orderCol = resolveAgentOrderColumn(args.orderBy);
 
       assertNoMixedCursorOffset(args.after, skip);
       assertCursorOrderCompatibility(args.after, orderCol);
@@ -197,31 +289,7 @@ export const queryResolvers = {
       }
 
       const sql = `SELECT
-                          a.asset,
-                          a.owner,
-                          a.agent_uri,
-                          a.agent_wallet,
-                          a.collection,
-                          a.nft_name,
-                          a.atom_enabled,
-                          a.trust_tier,
-                          a.quality_score,
-                          a.confidence,
-                          a.risk_score,
-                          a.diversity_ratio,
-                          a.sort_key,
-                          a.status,
-                          a.verified_at,
-                          a.created_at,
-                          a.updated_at,
-                          a.tx_signature AS created_tx_signature,
-                          a.block_slot::text AS created_slot,
-                          adc.feedback_digest::text AS feedback_digest,
-                          adc.response_digest::text AS response_digest,
-                          adc.revoke_digest::text AS revoke_digest,
-                          COALESCE(adc.digest_feedback_count::text, a.feedback_count::text, '0') AS feedback_count,
-                          COALESCE(adc.digest_response_count::text, '0') AS response_count,
-                          COALESCE(adc.digest_revoke_count::text, '0') AS revoke_count
+                          ${AGENT_SELECT_WITH_DIGESTS}
                    FROM agents a
                    LEFT JOIN (
                      SELECT
@@ -318,7 +386,7 @@ export const queryResolvers = {
 
       const useSig = decoded.sig.length > 0;
       const sql = `SELECT id, asset, client_address, feedback_index, responder,
-                          response_uri, response_hash, running_digest, NULL::bigint AS response_count,
+                          response_uri, response_hash, running_digest, response_count,
                           status, verified_at, tx_signature, block_slot, created_at
                    FROM feedback_responses
                    WHERE asset = $1 AND client_address = $2 AND feedback_index = $3
@@ -368,7 +436,7 @@ export const queryResolvers = {
       }
 
       const sql = `SELECT id, asset, client_address, feedback_index, responder,
-                          response_uri, response_hash, running_digest, NULL::bigint AS response_count,
+                          response_uri, response_hash, running_digest, response_count,
                           status, verified_at, tx_signature, block_slot, created_at
                    FROM feedback_responses ${where.sql}${cursorSql}
                    ORDER BY ${orderCol} ${dir}, id ${dir}
@@ -379,65 +447,23 @@ export const queryResolvers = {
       return rows;
     },
 
-    async validation(_: unknown, args: { id: string }, ctx: GraphQLContext) {
-      const decoded = decodeValidationId(args.id);
-      if (!decoded) return null;
-
-      const { rows } = await ctx.pool.query<ValidationRow>(
-        `SELECT id, asset, validator_address AS validator, requester, nonce, request_uri, request_hash,
-                response, response_uri, response_hash, tag, chain_status,
-                created_at, updated_at AS responded_at,
-                tx_signature AS request_tx_signature,
-                tx_signature AS response_tx_signature
-         FROM validations
-         WHERE asset = $1 AND validator_address = $2 AND nonce = $3
-         AND chain_status != 'ORPHANED'`,
-        [decoded.asset, decoded.validator, decoded.nonce]
-      );
-      return rows[0] ?? null;
+    async validation(_: unknown, _args: { id: string }, _ctx: GraphQLContext) {
+      // Validation module is archived in agent-registry-8004 (v0.5.0+).
+      // Keep schema field for backward compatibility, but return no rows.
+      return null;
     },
 
     async validations(
       _: unknown,
-      args: {
+      _args: {
         first?: number; skip?: number; after?: string;
         where?: Record<string, unknown>;
       },
-      ctx: GraphQLContext
+      _ctx: GraphQLContext
     ) {
-      const first = clampFirst(args.first);
-      const skip = clampSkip(args.skip);
-
-      assertNoMixedCursorOffset(args.after, skip);
-
-      const where = buildWhereClause('validation', args.where);
-      const params = [...where.params];
-      let paramIdx = where.paramIndex;
-
-      let cursorSql = '';
-      if (args.after) {
-        const cursor = decodeFlexibleCursor(args.after);
-        if (!cursor) {
-          throw createBadUserInputError('Invalid validations cursor. Expected base64 JSON with created_at and optional id.');
-        }
-        const cursorId = cursor.id ?? '';
-        cursorSql = ` AND (created_at, id) < ($${paramIdx}::timestamptz, $${paramIdx + 1}::text)`;
-        params.push(cursor.created_at, cursorId);
-        paramIdx += 2;
-      }
-
-      const sql = `SELECT id, asset, validator_address AS validator, requester, nonce, request_uri, request_hash,
-                          response, response_uri, response_hash, tag, chain_status,
-                          created_at, updated_at AS responded_at,
-                          tx_signature AS request_tx_signature,
-                          tx_signature AS response_tx_signature
-                   FROM validations ${where.sql}${cursorSql}
-                   ORDER BY created_at DESC, id DESC
-                   LIMIT $${paramIdx}::int OFFSET $${paramIdx + 1}::int`;
-      params.push(first, skip);
-
-      const { rows } = await ctx.pool.query<ValidationRow>(sql, params);
-      return rows;
+      // Validation module is archived in agent-registry-8004 (v0.5.0+).
+      // Keep schema field for backward compatibility, but return no rows.
+      return [];
     },
 
     async agentMetadatas(
@@ -513,31 +539,7 @@ export const queryResolvers = {
 
       const { rows } = await ctx.pool.query<AgentRow>(
         `SELECT
-                a.asset,
-                a.owner,
-                a.agent_uri,
-                a.agent_wallet,
-                a.collection,
-                a.nft_name,
-                a.atom_enabled,
-                a.trust_tier,
-                a.quality_score,
-                a.confidence,
-                a.risk_score,
-                a.diversity_ratio,
-                a.sort_key,
-                a.status,
-                a.verified_at,
-                a.created_at,
-                a.updated_at,
-                a.tx_signature AS created_tx_signature,
-                a.block_slot::text AS created_slot,
-                adc.feedback_digest::text AS feedback_digest,
-                adc.response_digest::text AS response_digest,
-                adc.revoke_digest::text AS revoke_digest,
-                COALESCE(adc.digest_feedback_count::text, a.feedback_count::text, '0') AS feedback_count,
-                COALESCE(adc.digest_response_count::text, '0') AS response_count,
-                COALESCE(adc.digest_revoke_count::text, '0') AS revoke_count
+                ${AGENT_SELECT_WITH_DIGESTS}
          FROM agents a
          LEFT JOIN (
            SELECT
@@ -562,6 +564,373 @@ export const queryResolvers = {
       }
 
       return rows;
+    },
+
+    async collections(
+      _: unknown,
+      args: {
+        first?: number;
+        skip?: number;
+        collection?: string;
+        creator?: string;
+      },
+      ctx: GraphQLContext
+    ) {
+      const first = clampFirst(args.first);
+      const skip = clampSkip(args.skip);
+      const params: unknown[] = [];
+      const filters: string[] = [];
+      let paramIdx = 1;
+
+      if (args.collection) {
+        filters.push(`col = $${paramIdx}::text`);
+        params.push(args.collection);
+        paramIdx++;
+      }
+      if (args.creator) {
+        filters.push(`creator = $${paramIdx}::text`);
+        params.push(args.creator);
+        paramIdx++;
+      }
+
+      const whereSql = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';
+      const sql = `SELECT
+                          col,
+                          creator,
+                          first_seen_asset,
+                          first_seen_at,
+                          first_seen_slot::text,
+                          first_seen_tx_signature,
+                          last_seen_at,
+                          last_seen_slot::text,
+                          last_seen_tx_signature,
+                          asset_count::text,
+                          version,
+                          name,
+                          symbol,
+                          description,
+                          image,
+                          banner_image,
+                          social_website,
+                          social_x,
+                          social_discord,
+                          metadata_status,
+                          metadata_hash,
+                          metadata_bytes::text,
+                          metadata_updated_at
+                   FROM collection_pointers
+                   ${whereSql}
+                   ORDER BY first_seen_at DESC, col ASC, creator ASC
+                   LIMIT $${paramIdx}::int OFFSET $${paramIdx + 1}::int`;
+      params.push(first, skip);
+
+      const { rows } = await ctx.pool.query<CollectionRow>(sql, params);
+      return rows.map((row) => ({
+        collection: row.col,
+        creator: row.creator,
+        firstSeenAsset: row.first_seen_asset,
+        firstSeenAt: toUnixTimestamp(row.first_seen_at),
+        firstSeenSlot: row.first_seen_slot,
+        firstSeenTxSignature: row.first_seen_tx_signature,
+        lastSeenAt: toUnixTimestamp(row.last_seen_at),
+        lastSeenSlot: row.last_seen_slot,
+        lastSeenTxSignature: row.last_seen_tx_signature,
+        assetCount: row.asset_count,
+        version: row.version,
+        name: row.name,
+        symbol: row.symbol,
+        description: row.description,
+        image: row.image,
+        bannerImage: row.banner_image,
+        socialWebsite: row.social_website,
+        socialX: row.social_x,
+        socialDiscord: row.social_discord,
+        metadataStatus: row.metadata_status,
+        metadataHash: row.metadata_hash,
+        metadataBytes: row.metadata_bytes,
+        metadataUpdatedAt: row.metadata_updated_at ? toUnixTimestamp(row.metadata_updated_at) : null,
+      }));
+    },
+
+    async collectionAssetCount(
+      _: unknown,
+      args: {
+        collection: string;
+        creator?: string;
+      },
+      ctx: GraphQLContext
+    ) {
+      const params: unknown[] = [args.collection];
+      let sql = `SELECT COUNT(*)::text AS count
+                 FROM agents
+                 WHERE status != 'ORPHANED'
+                   AND canonical_col = $1::text`;
+
+      if (args.creator) {
+        params.push(args.creator);
+        sql += ` AND creator = $2::text`;
+      }
+
+      const { rows } = await ctx.pool.query<{ count: string }>(sql, params);
+      return rows[0]?.count ?? '0';
+    },
+
+    async collectionAssets(
+      _: unknown,
+      args: {
+        collection: string;
+        creator?: string;
+        first?: number;
+        skip?: number;
+        orderBy?: string;
+        orderDirection?: string;
+      },
+      ctx: GraphQLContext
+    ) {
+      const first = clampAgentPageSize(args.first);
+      const skip = clampSkip(args.skip);
+      const dir = resolveDirection(args.orderDirection);
+      const orderCol = resolveAgentOrderColumn(args.orderBy);
+
+      const params: unknown[] = [args.collection];
+      let paramIdx = 2;
+      let creatorSql = '';
+      if (args.creator) {
+        creatorSql = ` AND a.creator = $${paramIdx}::text`;
+        params.push(args.creator);
+        paramIdx++;
+      }
+
+      const sql = `SELECT
+                          ${AGENT_SELECT_WITH_DIGESTS}
+                   FROM agents a
+                   LEFT JOIN (
+                     SELECT
+                       agent_id,
+                       feedback_digest,
+                       response_digest,
+                       revoke_digest,
+                       feedback_count AS digest_feedback_count,
+                       response_count AS digest_response_count,
+                       revoke_count AS digest_revoke_count
+                     FROM agent_digest_cache
+                   ) adc ON adc.agent_id = a.asset
+                   WHERE a.status != 'ORPHANED'
+                     AND a.canonical_col = $1::text
+                     ${creatorSql}
+                   ORDER BY ${orderCol} ${dir}, a.asset ${dir}
+                   LIMIT $${paramIdx}::int OFFSET $${paramIdx + 1}::int`;
+      params.push(first, skip);
+
+      const { rows } = await ctx.pool.query<AgentRow>(sql, params);
+      for (const row of rows) {
+        ctx.loaders.agentById.prime(row.asset, row);
+      }
+      return rows;
+    },
+
+    async agentChildren(
+      _: unknown,
+      args: {
+        parent: string;
+        first?: number;
+        skip?: number;
+      },
+      ctx: GraphQLContext
+    ) {
+      const parentAsset = resolveAssetId(args.parent);
+      const first = clampFirst(args.first);
+      const skip = clampSkip(args.skip);
+
+      const { rows } = await ctx.pool.query<AgentRow>(
+        `SELECT
+                ${AGENT_SELECT_WITH_DIGESTS}
+         FROM agents a
+         LEFT JOIN (
+           SELECT
+             agent_id,
+             feedback_digest,
+             response_digest,
+             revoke_digest,
+             feedback_count AS digest_feedback_count,
+             response_count AS digest_response_count,
+             revoke_count AS digest_revoke_count
+           FROM agent_digest_cache
+         ) adc ON adc.agent_id = a.asset
+         WHERE a.parent_asset = $1::text
+           AND a.status != 'ORPHANED'
+         ORDER BY a.created_at DESC, a.asset DESC
+         LIMIT $2::int OFFSET $3::int`,
+        [parentAsset, first, skip]
+      );
+
+      for (const row of rows) {
+        ctx.loaders.agentById.prime(row.asset, row);
+      }
+
+      return rows;
+    },
+
+    async agentLineage(
+      _: unknown,
+      args: {
+        asset: string;
+        includeSelf?: boolean;
+        first?: number;
+        skip?: number;
+      },
+      ctx: GraphQLContext
+    ) {
+      const asset = resolveAssetId(args.asset);
+      const includeSelf = args.includeSelf !== false;
+      const first = clampAgentPageSize(args.first);
+      const skip = clampSkip(args.skip);
+
+      const { rows } = await ctx.pool.query<AgentTreeNodeRow>(
+        `WITH RECURSIVE lineage AS (
+           SELECT
+             a.asset,
+             a.parent_asset,
+             ARRAY[a.asset]::text[] AS path,
+             0 AS depth
+           FROM agents a
+           WHERE a.asset = $1::text
+             AND a.status != 'ORPHANED'
+           UNION ALL
+           SELECT
+             p.asset,
+             p.parent_asset,
+             l.path || p.asset,
+             l.depth + 1
+           FROM agents p
+           INNER JOIN lineage l ON l.parent_asset = p.asset
+           WHERE p.status != 'ORPHANED'
+             AND l.depth < $2::int
+             AND NOT (p.asset = ANY(l.path))
+         )
+         SELECT asset, parent_asset, path, depth
+         FROM lineage
+         WHERE $3::boolean OR depth > 0
+         ORDER BY depth DESC, asset ASC`,
+        [asset, MAX_LINEAGE_DEPTH, includeSelf]
+      );
+
+      if (rows.length === 0) return [];
+
+      const assets = rows.map((row) => row.asset);
+      const { rows: agentRows } = await ctx.pool.query<AgentRow>(
+        `SELECT
+                ${AGENT_SELECT_WITH_DIGESTS}
+         FROM agents a
+         LEFT JOIN (
+           SELECT
+             agent_id,
+             feedback_digest,
+             response_digest,
+             revoke_digest,
+             feedback_count AS digest_feedback_count,
+             response_count AS digest_response_count,
+             revoke_count AS digest_revoke_count
+           FROM agent_digest_cache
+         ) adc ON adc.agent_id = a.asset
+         WHERE a.asset = ANY($1::text[])
+           AND a.status != 'ORPHANED'`,
+        [assets]
+      );
+      const byAsset = new Map(agentRows.map((row) => [row.asset, row]));
+
+      const ordered = rows
+        .map((row) => byAsset.get(row.asset) ?? null)
+        .filter((row): row is AgentRow => row !== null)
+        .map((row) => {
+          ctx.loaders.agentById.prime(row.asset, row);
+          return row;
+        });
+      return ordered.slice(skip, skip + first);
+    },
+
+    async agentTree(
+      _: unknown,
+      args: {
+        root: string;
+        maxDepth?: number;
+        includeRoot?: boolean;
+        first?: number;
+        skip?: number;
+      },
+      ctx: GraphQLContext
+    ) {
+      const rootAsset = resolveAssetId(args.root);
+      const maxDepth = clampTreeDepth(args.maxDepth);
+      const includeRoot = args.includeRoot !== false;
+      const first = clampAgentPageSize(args.first);
+      const skip = clampSkip(args.skip);
+
+      const { rows } = await ctx.pool.query<AgentTreeNodeRow>(
+        `WITH RECURSIVE tree AS (
+           SELECT
+             a.asset,
+             a.parent_asset,
+             ARRAY[a.asset]::text[] AS path,
+             0 AS depth
+           FROM agents a
+           WHERE a.asset = $1::text
+             AND a.status != 'ORPHANED'
+           UNION ALL
+           SELECT
+             c.asset,
+             c.parent_asset,
+             t.path || c.asset,
+             t.depth + 1
+           FROM agents c
+           INNER JOIN tree t ON c.parent_asset = t.asset
+           WHERE c.status != 'ORPHANED'
+             AND t.depth < $2::int
+             AND NOT (c.asset = ANY(t.path))
+         )
+         SELECT asset, parent_asset, path, depth
+         FROM tree
+         WHERE $3::boolean OR depth > 0
+         ORDER BY depth ASC, path ASC
+         LIMIT $4::int OFFSET $5::int`,
+        [rootAsset, maxDepth, includeRoot, first, skip]
+      );
+
+      if (rows.length === 0) return [];
+
+      const assets = rows.map((row) => row.asset);
+      const agentSql = `SELECT
+                              ${AGENT_SELECT_WITH_DIGESTS}
+                        FROM agents a
+                        LEFT JOIN (
+                          SELECT
+                            agent_id,
+                            feedback_digest,
+                            response_digest,
+                            revoke_digest,
+                            feedback_count AS digest_feedback_count,
+                            response_count AS digest_response_count,
+                            revoke_count AS digest_revoke_count
+                          FROM agent_digest_cache
+                        ) adc ON adc.agent_id = a.asset
+                        WHERE a.asset = ANY($1::text[])
+                          AND a.status != 'ORPHANED'`;
+      const { rows: agentRows } = await ctx.pool.query<AgentRow>(agentSql, [assets]);
+      const byAsset = new Map(agentRows.map((row) => [row.asset, row]));
+
+      return rows
+        .map((row) => {
+          const agent = byAsset.get(row.asset);
+          if (!agent) return null;
+          ctx.loaders.agentById.prime(agent.asset, agent);
+          return {
+            depth: row.depth,
+            path: row.path,
+            parentAsset: row.parent_asset,
+            agent,
+          };
+        })
+        .filter((row): row is { depth: number; path: string[]; parentAsset: string | null; agent: AgentRow } => row !== null);
     },
 
     async agentRegistrationFiles(

@@ -48,6 +48,7 @@ input AgentFilter {
   id_in: [ID!]
   owner: String
   owner_in: [String!]
+  creator: String
   agentWallet: String
   totalFeedback_gt: BigInt
   totalFeedback_gte: BigInt
@@ -56,7 +57,12 @@ input AgentFilter {
   updatedAt_gt: BigInt
   updatedAt_lt: BigInt
   collection: String
+  collectionPointer: String
+  parentAsset: String
+  parentCreator: String
   atomEnabled: Boolean
+  colLocked: Boolean
+  parentLocked: Boolean
   trustTier_gte: Int
 }
 
@@ -101,7 +107,13 @@ type Agent {
   agentURI: String
   agentURIType: URIType
   owner: String!
+  creator: String
   agentWallet: String
+  collectionPointer: String
+  colLocked: Boolean!
+  parentAsset: String
+  parentCreator: String
+  parentLocked: Boolean!
   operators: [String!]!
   totalFeedback: BigInt!
   lastActivity: BigInt
@@ -293,6 +305,39 @@ type HashChainReplayPage {
   nextFromCount: BigInt!
 }
 
+type Collection {
+  collection: String!
+  creator: String!
+  firstSeenAsset: String!
+  firstSeenAt: BigInt!
+  firstSeenSlot: BigInt!
+  firstSeenTxSignature: String
+  lastSeenAt: BigInt!
+  lastSeenSlot: BigInt!
+  lastSeenTxSignature: String
+  assetCount: BigInt!
+  version: String
+  name: String
+  symbol: String
+  description: String
+  image: String
+  bannerImage: String
+  socialWebsite: String
+  socialX: String
+  socialDiscord: String
+  metadataStatus: String
+  metadataHash: String
+  metadataBytes: BigInt
+  metadataUpdatedAt: BigInt
+}
+
+type AgentTreeNode {
+  depth: Int!
+  path: [String!]!
+  parentAsset: String
+  agent: Agent!
+}
+
 type Query {
   agent(id: ID!): Agent
   agents(
@@ -321,13 +366,13 @@ type Query {
     orderBy: FeedbackResponseOrderBy
     orderDirection: OrderDirection
   ): [FeedbackResponse!]!
-  validation(id: ID!): Validation
+  validation(id: ID!): Validation @deprecated(reason: "Validation module is archived in agent-registry-8004 (v0.5.0+).")
   validations(
     first: Int = 100
     skip: Int = 0
     after: String
     where: ValidationFilter
-  ): [Validation!]!
+  ): [Validation!]! @deprecated(reason: "Validation module is archived in agent-registry-8004 (v0.5.0+).")
   agentMetadatas(
     first: Int = 100
     skip: Int = 0
@@ -352,5 +397,41 @@ type Query {
     toCount: BigInt
     first: Int = 1000
   ): HashChainReplayPage!
+  collections(
+    first: Int = 100
+    skip: Int = 0
+    collection: String
+    creator: String
+  ): [Collection!]!
+  agentChildren(
+    parent: ID!
+    first: Int = 100
+    skip: Int = 0
+  ): [Agent!]!
+  agentTree(
+    root: ID!
+    maxDepth: Int = 5
+    includeRoot: Boolean = true
+    first: Int = 100
+    skip: Int = 0
+  ): [AgentTreeNode!]!
+  collectionAssetCount(
+    collection: String!
+    creator: String
+  ): BigInt!
+  collectionAssets(
+    collection: String!
+    creator: String
+    first: Int = 100
+    skip: Int = 0
+    orderBy: AgentOrderBy
+    orderDirection: OrderDirection
+  ): [Agent!]!
+  agentLineage(
+    asset: ID!
+    includeSelf: Boolean = true
+    first: Int = 100
+    skip: Int = 0
+  ): [Agent!]!
 
 }

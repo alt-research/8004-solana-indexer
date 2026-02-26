@@ -34,9 +34,10 @@ function parseBigInt(value: unknown): bigint {
 }
 
 /**
- * Parse i64 value (signed)
+ * Parse signed integer value from event payload.
+ * Supports full i128 range carried by the v0.6.0 feedback schema.
  */
-function parseI64(value: unknown): bigint {
+function parseSignedInt(value: unknown): bigint {
   return parseBigInt(value);
 }
 
@@ -188,6 +189,19 @@ export function toTypedEvent(event: ParsedEvent): ProgramEvent | null {
           },
         };
 
+      case "WalletResetOnOwnerSync":
+        return {
+          type: "WalletResetOnOwnerSync",
+          data: {
+            asset: new PublicKey(data.asset as string),
+            oldWallet: data.old_wallet
+              ? new PublicKey(data.old_wallet as string)
+              : null,
+            newWallet: new PublicKey(data.new_wallet as string),
+            ownerAfterSync: new PublicKey(data.owner_after_sync as string),
+          },
+        };
+
       case "MetadataSet":
         return {
           type: "MetadataSet",
@@ -218,6 +232,16 @@ export function toTypedEvent(event: ParsedEvent): ProgramEvent | null {
           },
         };
 
+      case "CollectionPointerSet":
+        return {
+          type: "CollectionPointerSet",
+          data: {
+            asset: new PublicKey(data.asset as string),
+            setBy: new PublicKey(data.set_by as string),
+            col: data.col as string,
+          },
+        };
+
       case "NewFeedback":
         return {
           type: "NewFeedback",
@@ -226,7 +250,7 @@ export function toTypedEvent(event: ParsedEvent): ProgramEvent | null {
             clientAddress: new PublicKey(data.client_address as string),
             feedbackIndex: parseBigInt(data.feedback_index),
             slot: parseBigInt(data.slot),
-            value: parseI64(data.value),
+            value: parseSignedInt(data.value),
             valueDecimals: data.value_decimals as number,
             score: parseOptionU8(data.score),
             // SEAL v1: feedback_file_hash is optional, seal_hash is computed on-chain
@@ -247,6 +271,17 @@ export function toTypedEvent(event: ParsedEvent): ProgramEvent | null {
             tag2: data.tag2 as string,
             endpoint: data.endpoint as string,
             feedbackUri: data.feedback_uri as string,
+          },
+        };
+
+      case "ParentAssetSet":
+        return {
+          type: "ParentAssetSet",
+          data: {
+            asset: new PublicKey(data.asset as string),
+            parentAsset: new PublicKey(data.parent_asset as string),
+            parentCreator: new PublicKey(data.parent_creator as string),
+            setBy: new PublicKey(data.set_by as string),
           },
         };
 

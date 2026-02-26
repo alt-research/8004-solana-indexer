@@ -4,7 +4,7 @@ import { vi, beforeEach, afterEach } from "vitest";
 process.env.DATABASE_URL = "POSTGRES_DSN_REDACTED";
 process.env.RPC_URL = "https://api.devnet.solana.com";
 process.env.WS_URL = "wss://api.devnet.solana.com";
-process.env.PROGRAM_ID = "8oo48pya1SZD23ZhzoNMhxR2UGb8BRa41Su4qP9EuaWm";
+process.env.PROGRAM_ID = "8oo4J9tBB3Hna1jRQ3rWvJjojqM5DYTDJo5cejUuJy3C";
 process.env.LOG_LEVEL = "silent";
 
 // Mock pino logger to be silent during tests

@@ -3,8 +3,8 @@ import { PublicKey, Connection } from "@solana/web3.js";
 
 // Mock 8004-solana SDK exports
 vi.mock("8004-solana", () => ({
-  PROGRAM_ID: new PublicKey("8oo48pya1SZD23ZhzoNMhxR2UGb8BRa41Su4qP9EuaWm"),
-  ATOM_ENGINE_PROGRAM_ID: new PublicKey("AToM1iKaniUCuWfHd5WQy5aLgJYWMiKq78NtNJmtzSXJ"),
+  PROGRAM_ID: new PublicKey("8oo4J9tBB3Hna1jRQ3rWvJjojqM5DYTDJo5cejUuJy3C"),
+  ATOM_ENGINE_PROGRAM_ID: new PublicKey("AToMufS4QD6hEXvcvBDg9m1AHeCLpmZQsyfYa5h9MwAF"),
   MPL_CORE_PROGRAM_ID: new PublicKey("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"),
 }));
 
@@ -36,12 +36,12 @@ describe("PDA Utilities", () => {
   describe("Program ID exports", () => {
     it("should export AGENT_REGISTRY_PROGRAM_ID from SDK", () => {
       expect(AGENT_REGISTRY_PROGRAM_ID).toBeDefined();
-      expect(AGENT_REGISTRY_PROGRAM_ID.toBase58()).toBe("8oo48pya1SZD23ZhzoNMhxR2UGb8BRa41Su4qP9EuaWm");
+      expect(AGENT_REGISTRY_PROGRAM_ID.toBase58()).toBe("8oo4J9tBB3Hna1jRQ3rWvJjojqM5DYTDJo5cejUuJy3C");
     });
 
     it("should export ATOM_ENGINE_PROGRAM_ID from SDK", () => {
       expect(ATOM_ENGINE_PROGRAM_ID).toBeDefined();
-      expect(ATOM_ENGINE_PROGRAM_ID.toBase58()).toBe("AToM1iKaniUCuWfHd5WQy5aLgJYWMiKq78NtNJmtzSXJ");
+      expect(ATOM_ENGINE_PROGRAM_ID.toBase58()).toBe("AToMufS4QD6hEXvcvBDg9m1AHeCLpmZQsyfYa5h9MwAF");
     });
 
     it("should export MPL_CORE_PROGRAM_ID from SDK", () => {

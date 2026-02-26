@@ -7,7 +7,7 @@ Solana indexer for the 8004 Agent Registry with GraphQL v2 and transitional REST
 - WebSocket + polling ingestion modes
 - Reorg resilience with verification worker
 - GraphQL API (`/v2/graphql`) with query depth/complexity guards
-- Legacy REST v1 (`/rest/v1/*`) still available when `API_MODE=rest|hybrid`
+- Legacy REST v1 (`/rest/v1/*`) available when `API_MODE=rest|both`
 - Supabase/PostgreSQL data backend support
 - Strict events-only integrity policy:
   - revoke/response without parent feedback => `ORPHANED`
@@ -30,6 +30,15 @@ GraphQL v2 endpoint:
 http://localhost:3001/v2/graphql
 ```
 
+## Remote API Docs
+
+Canonical API docs are maintained in:
+
+- https://github.com/QuantuLabs/8004-solana-api
+- https://github.com/QuantuLabs/8004-solana-api/blob/main/docs/rest-v1.md
+- https://github.com/QuantuLabs/8004-solana-api/blob/main/docs/collections.md
+- https://github.com/QuantuLabs/8004-solana-api/tree/main/docs/examples
+
 ## Required Environment
 
 ```bash
@@ -43,9 +52,10 @@ WS_URL=wss://api.devnet.solana.com
 
 Notes:
 
-- `API_MODE=graphql` is default.
-- GraphQL requires `DB_MODE=supabase`.
-- REST v1 requires `DB_MODE=local` (Prisma).
+- GraphQL requires `DB_MODE=supabase` (recommended `API_MODE=graphql`).
+- REST v1 requires `DB_MODE=local` (Prisma; recommended `API_MODE=rest`).
+- `API_MODE=both` is best-effort dual mode and disables whichever side has no matching DB backend.
+- `.env.localnet` is preconfigured for local REST mode.
 - `GRAPHQL_STATS_CACHE_TTL_MS` controls `globalStats`/`protocol` aggregate cache TTL (default `60000` ms).
 
 ## Commands
@@ -55,9 +65,50 @@ npm run dev
 npm run build
 npm test
 npm run test:e2e
+npm run localnet:start
+npm run localnet:init
+npm run test:localnet:only
+npm run test:localnet
+npm run localnet:stop
+npm run test:docker:ci
 npm run check:graphql:coherence
 npm run bench:graphql:sql
 npm run bench:hashchain
+```
+
+## Docker
+
+Build local image:
+
+```bash
+docker build \
+  --build-arg INDEXER_VERSION=$(node -p "require('./package.json').version") \
+  -t 8004-indexer-classic:local .
+```
+
+Run local smoke container:
+
+```bash
+docker run --rm -p 3001:3001 --env-file .env 8004-indexer-classic:local
+```
+
+CI test target in Docker:
+
+```bash
+npm run test:docker:ci
+```
+
+Runtime stack (digest-pin friendly):
+
+```bash
+docker compose -f docker/stack/classic-stack.yml up -d
+```
+
+Integrity helpers:
+
+```bash
+scripts/docker/record-digest.sh ghcr.io/quantulabs/8004-indexer-classic v1.6.0 docker/digests.yml
+scripts/docker/verify-image-integrity.sh ghcr.io/quantulabs/8004-indexer-classic v1.6.0
 ```
 
 ## GraphQL Example
@@ -85,6 +136,13 @@ query Dashboard {
 
 - `tests/e2e/reorg-resilience.test.ts`
 - `tests/e2e/devnet-verification.test.ts`
+
+`npm run test:localnet` handles the full localnet flow:
+
+- start validator + deploy program
+- initialize on-chain localnet state
+- run `Localnet`-tagged E2E suite
+- stop validator (unless `KEEP_LOCALNET=1`)
 
 ## Project Structure
 

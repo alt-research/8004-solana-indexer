@@ -1,0 +1,13 @@
+ALTER TABLE collection_pointers ADD COLUMN IF NOT EXISTS version TEXT;
+ALTER TABLE collection_pointers ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE collection_pointers ADD COLUMN IF NOT EXISTS symbol TEXT;
+ALTER TABLE collection_pointers ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE collection_pointers ADD COLUMN IF NOT EXISTS image TEXT;
+ALTER TABLE collection_pointers ADD COLUMN IF NOT EXISTS banner_image TEXT;
+ALTER TABLE collection_pointers ADD COLUMN IF NOT EXISTS social_website TEXT;
+ALTER TABLE collection_pointers ADD COLUMN IF NOT EXISTS social_x TEXT;
+ALTER TABLE collection_pointers ADD COLUMN IF NOT EXISTS social_discord TEXT;
+ALTER TABLE collection_pointers ADD COLUMN IF NOT EXISTS metadata_status TEXT;
+ALTER TABLE collection_pointers ADD COLUMN IF NOT EXISTS metadata_hash TEXT;
+ALTER TABLE collection_pointers ADD COLUMN IF NOT EXISTS metadata_bytes INTEGER;
+ALTER TABLE collection_pointers ADD COLUMN IF NOT EXISTS metadata_updated_at TIMESTAMPTZ;

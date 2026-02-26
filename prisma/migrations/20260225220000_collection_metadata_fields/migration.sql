@@ -1,0 +1,13 @@
+ALTER TABLE "CollectionPointer" ADD COLUMN "version" TEXT;
+ALTER TABLE "CollectionPointer" ADD COLUMN "name" TEXT;
+ALTER TABLE "CollectionPointer" ADD COLUMN "symbol" TEXT;
+ALTER TABLE "CollectionPointer" ADD COLUMN "description" TEXT;
+ALTER TABLE "CollectionPointer" ADD COLUMN "image" TEXT;
+ALTER TABLE "CollectionPointer" ADD COLUMN "bannerImage" TEXT;
+ALTER TABLE "CollectionPointer" ADD COLUMN "socialWebsite" TEXT;
+ALTER TABLE "CollectionPointer" ADD COLUMN "socialX" TEXT;
+ALTER TABLE "CollectionPointer" ADD COLUMN "socialDiscord" TEXT;
+ALTER TABLE "CollectionPointer" ADD COLUMN "metadataStatus" TEXT;
+ALTER TABLE "CollectionPointer" ADD COLUMN "metadataHash" TEXT;
+ALTER TABLE "CollectionPointer" ADD COLUMN "metadataBytes" INTEGER;
+ALTER TABLE "CollectionPointer" ADD COLUMN "metadataUpdatedAt" DATETIME;

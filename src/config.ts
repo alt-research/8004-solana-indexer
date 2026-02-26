@@ -1,14 +1,16 @@
 import "dotenv/config";
-import { PROGRAM_ID } from "8004-solana";
 
 export type IndexerMode = "auto" | "polling" | "websocket";
 export type DbMode = "local" | "supabase";
-export type ApiMode = "graphql" | "rest" | "hybrid";
+export type ApiMode = "graphql" | "rest" | "both";
 export type MetadataIndexMode = "off" | "normal" | "full";
 export type ChainStatus = "PENDING" | "FINALIZED" | "ORPHANED";
 
+const DEFAULT_PROGRAM_ID = "8oo4J9tBB3Hna1jRQ3rWvJjojqM5DYTDJo5cejUuJy3C";
+const resolvedProgramId = (process.env.PROGRAM_ID || DEFAULT_PROGRAM_ID).trim();
+
 const VALID_DB_MODES: DbMode[] = ["local", "supabase"];
-const VALID_API_MODES: ApiMode[] = ["graphql", "rest", "hybrid"];
+const VALID_API_MODES: ApiMode[] = ["graphql", "rest", "both"];
 const VALID_INDEXER_MODES: IndexerMode[] = ["auto", "polling", "websocket"];
 const VALID_METADATA_MODES: MetadataIndexMode[] = ["off", "normal", "full"];
 
@@ -29,9 +31,16 @@ function parseIndexerMode(value: string | undefined): IndexerMode {
 }
 
 function parseApiMode(value: string | undefined): ApiMode {
-  const mode = (value || "graphql").toLowerCase();
+  const rawMode = (value || "both").trim().toLowerCase();
+  const mode = rawMode === "graph"
+    ? "graphql"
+    : rawMode === "hybrid"
+      ? "both"
+      : rawMode;
   if (!VALID_API_MODES.includes(mode as ApiMode)) {
-    throw new Error(`Invalid API_MODE '${mode}'. Must be one of: ${VALID_API_MODES.join(", ")}`);
+    throw new Error(
+      `Invalid API_MODE '${rawMode}'. Must be one of: ${VALID_API_MODES.join(", ")} (legacy alias: hybrid)`
+    );
   }
   return mode as ApiMode;
 }
@@ -98,9 +107,9 @@ export const config = {
   wsUrl: process.env.WS_URL || "wss://api.devnet.solana.com",
 
   // Program ID from SDK (source of truth)
-  programId: PROGRAM_ID.toBase58(),
+  programId: resolvedProgramId,
 
-  // API mode: graphql (default) | rest | hybrid
+  // API mode: both (default) | graphql | rest
   apiMode: parseApiMode(process.env.API_MODE),
   // GraphQL requires Supabase pool and is enabled by default
   enableGraphql: parseBoolean(process.env.ENABLE_GRAPHQL, true),
@@ -128,6 +137,9 @@ export const config = {
   // URI Metadata indexing (fetch and extract fields from agent_uri)
   // off = don't fetch URIs, normal = extract standard fields, full = store entire JSON
   metadataIndexMode: parseMetadataMode(process.env.INDEX_METADATA),
+  // Collection metadata indexing from canonical pointer (c1:<cid>)
+  // true = fetch and parse collection JSON, false = keep on-chain only
+  collectionMetadataIndexEnabled: parseBoolean(process.env.INDEX_COLLECTION_METADATA, true),
   // Maximum bytes to fetch from URI (prevents memory exhaustion)
   metadataMaxBytes: parseInt(process.env.METADATA_MAX_BYTES || "262144", 10), // 256KB
   // Maximum bytes per field value (prevents single oversize field)

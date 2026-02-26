@@ -509,7 +509,7 @@ export class EventBuffer {
         false,
         data.atomEnabled || false,
         ctx.slot.toString(),
-        ctx.txIndex || null,
+        ctx.txIndex ?? null,
         ctx.signature,
         ctx.blockTime.toISOString(),
         ctx.blockTime.toISOString()]);
@@ -537,7 +537,7 @@ export class EventBuffer {
         data.value?.toString() || "0", data.valueDecimals || 0, data.score,
         data.tag1 || null, data.tag2 || null, data.endpoint || null,
         data.feedbackUri || null, feedbackHash, runningDigest,
-        false, ctx.slot.toString(), ctx.txIndex || null, ctx.signature, ctx.blockTime.toISOString()]);
+        false, ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString()]);
 
     if (insertResult.rowCount === 0) return;
 
@@ -673,7 +673,7 @@ export class EventBuffer {
       ON CONFLICT (id) DO NOTHING
     `, [id, asset, client_addr, feedbackIndex.toString(), responder,
         data.responseUri || "", responseHash, responseRunningDigest, responseCount.toString(),
-        ctx.slot.toString(), ctx.txIndex || null, ctx.signature, ctx.blockTime.toISOString()]);
+        ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString()]);
   }
 
   private async insertValidationRequestSupabase(client: PoolClient, data: EventData, ctx: BatchEvent["ctx"]): Promise<void> {
@@ -689,7 +689,7 @@ export class EventBuffer {
       ON CONFLICT (id) DO NOTHING
     `, [id, asset, validator, nonce.toString(), requester, data.requestUri || "",
         data.requestHash ? Buffer.from(data.requestHash).toString("hex") : null,
-        ctx.slot.toString(), ctx.txIndex || null, ctx.signature, ctx.blockTime.toISOString()]);
+        ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString()]);
   }
 
   private async updateValidationResponseSupabase(client: PoolClient, data: EventData, ctx: BatchEvent["ctx"]): Promise<void> {
@@ -712,7 +712,7 @@ export class EventBuffer {
     `, [id, asset, validator, nonce.toString(), data.response || 0, data.responseUri || "",
         data.responseHash ? Buffer.from(data.responseHash).toString("hex") : null,
         data.tag || "", "RESPONDED",
-        ctx.slot.toString(), ctx.txIndex || null, ctx.signature, ctx.blockTime.toISOString()]);
+        ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString()]);
   }
 
   // v0.6.0: RegistryInitialized replaces BaseRegistryCreated/UserRegistryCreated
@@ -858,7 +858,7 @@ export class EventBuffer {
         updated_at = $11
       WHERE NOT metadata.immutable
     `, [id, asset, key, keyHash, compressedValue, data.immutable || false,
-        ctx.slot.toString(), ctx.txIndex || null, ctx.signature, ctx.blockTime.toISOString(),
+        ctx.slot.toString(), ctx.txIndex ?? null, ctx.signature, ctx.blockTime.toISOString(),
         ctx.blockTime.toISOString()]);
   }
 

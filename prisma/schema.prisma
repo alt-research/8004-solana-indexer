@@ -39,9 +39,13 @@ model Agent {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
+  // Sequential registration number (auto-assigned by DB trigger in PostgreSQL)
+  globalId   BigInt?
+
   // Transaction reference
   createdTxSignature String?
   createdSlot        BigInt?
+  txIndex            Int?
 
   // Verification status (reorg resilience)
   status       String    @default("PENDING") // PENDING | FINALIZED | ORPHANED

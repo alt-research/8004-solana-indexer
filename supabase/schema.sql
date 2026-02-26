@@ -112,8 +112,12 @@ CREATE TABLE agents (
     (abs(hashtext(asset)) % 10000000)              -- tie-breaker (0-9,999,999)
   ) STORED,
 
+  -- Sequential registration ID (auto-assigned by trigger, permanent) --
+  global_id BIGINT,
+
   -- Chain reference --
   block_slot BIGINT NOT NULL,
+  tx_index INTEGER,
   tx_signature TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
@@ -123,6 +127,28 @@ CREATE TABLE agents (
   verified_at TIMESTAMPTZ,
   verified_slot BIGINT
 );
+
+-- Sequence + trigger for global_id auto-assignment
+CREATE SEQUENCE IF NOT EXISTS agent_global_id_seq START 1;
+
+CREATE OR REPLACE FUNCTION assign_agent_global_id()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.global_id IS NULL AND (NEW.status IS NULL OR NEW.status != 'ORPHANED') THEN
+    NEW.global_id := nextval('agent_global_id_seq');
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_assign_agent_global_id
+  BEFORE INSERT ON agents
+  FOR EACH ROW
+  EXECUTE FUNCTION assign_agent_global_id();
+
+-- Global ID indexes
+CREATE UNIQUE INDEX idx_agents_global_id ON agents(global_id) WHERE global_id IS NOT NULL;
+CREATE INDEX idx_agents_global_id_active ON agents(global_id ASC) WHERE status != 'ORPHANED' AND global_id IS NOT NULL;
 
 -- Standard indexes
 CREATE INDEX idx_agents_owner ON agents(owner);

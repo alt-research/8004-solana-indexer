@@ -283,18 +283,18 @@ export class Poller {
       if (!this.isRunning) break;
 
       const sigs = bySlot.get(slot)!;
-      let txIndexMap: Map<string, number>;
+      let txIndexMap: Map<string, number | null>;
       try {
         txIndexMap = await this.getTxIndexMap(slot, sigs);
       } catch (error) {
-        logger.warn({ slot, error: error instanceof Error ? error.message : String(error) }, "Failed to get tx index map, using default order");
-        txIndexMap = new Map(sigs.map((s, i) => [s.signature, i]));
+        logger.warn({ slot, error: error instanceof Error ? error.message : String(error) }, "Failed to get tx index map, tx_index will be NULL");
+        txIndexMap = new Map(sigs.map((s) => [s.signature, null]));
       }
 
       const sigsWithIndex = sigs.map(sig => ({
         sig,
-        txIndex: txIndexMap.get(sig.signature) ?? 0
-      })).sort((a, b) => a.txIndex - b.txIndex);
+        txIndex: txIndexMap.get(sig.signature) ?? undefined
+      })).sort((a, b) => (a.txIndex ?? Number.MAX_SAFE_INTEGER) - (b.txIndex ?? Number.MAX_SAFE_INTEGER));
 
       for (const { sig, txIndex } of sigsWithIndex) {
         if (!this.isRunning) break;
@@ -348,8 +348,8 @@ export class Poller {
    * Fetches block once and maps signature -> index
    * Only called when multiple txs exist in the same slot (rare case)
    */
-  private async getTxIndexMap(slot: number, sigs: ConfirmedSignatureInfo[]): Promise<Map<string, number>> {
-    const txIndexMap = new Map<string, number>();
+  private async getTxIndexMap(slot: number, sigs: ConfirmedSignatureInfo[]): Promise<Map<string, number | null>> {
+    const txIndexMap = new Map<string, number | null>();
 
     // If only one transaction in slot, index is 0 - no need to fetch block
     if (sigs.length === 1) {
@@ -357,27 +357,33 @@ export class Poller {
       return txIndexMap;
     }
 
-    try {
-      // Fetch block with full transaction details to get signatures in order
-      const block = await this.connection.getBlock(slot, {
-        maxSupportedTransactionVersion: 0,
-        transactionDetails: "full",
-      });
-
-      if (block?.transactions) {
-        // Build signature -> index map from block transactions (in execution order)
-        const sigSet = new Set(sigs.map(s => s.signature));
-        block.transactions.forEach((tx, idx) => {
-          const sig = tx.transaction.signatures[0]; // First signature is the tx signature
-          if (sigSet.has(sig)) {
-            txIndexMap.set(sig, idx);
-          }
+    const MAX_RETRIES = 3;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const block = await this.connection.getBlock(slot, {
+          maxSupportedTransactionVersion: 0,
+          transactionDetails: "full",
         });
+
+        if (block?.transactions) {
+          const sigSet = new Set(sigs.map(s => s.signature));
+          block.transactions.forEach((tx, idx) => {
+            const sig = tx.transaction.signatures[0];
+            if (sigSet.has(sig)) {
+              txIndexMap.set(sig, idx);
+            }
+          });
+        }
+        return txIndexMap;
+      } catch (error) {
+        if (attempt < MAX_RETRIES) {
+          logger.warn({ slot, attempt, error: error instanceof Error ? error.message : String(error) }, "getBlock failed, retrying");
+          await new Promise(r => setTimeout(r, 500 * attempt));
+        } else {
+          logger.warn({ slot, sigCount: sigs.length }, "getBlock failed after retries, tx_index will be NULL (unordered)");
+          sigs.forEach(sig => txIndexMap.set(sig.signature, null));
+        }
       }
-    } catch (error) {
-      logger.warn({ slot, error }, "Failed to fetch block for tx_index, using fallback order");
-      // Fallback: assign sequential indices based on signature order
-      sigs.forEach((sig, i) => txIndexMap.set(sig.signature, i));
     }
 
     return txIndexMap;
@@ -514,11 +520,11 @@ export class Poller {
       const sigs = bySlot.get(slot)!;
       const txIndexMap = await this.getTxIndexMap(slot, sigs);
 
-      // Sort by tx_index within slot
+      // Sort by tx_index within slot (NULL tx_index sorts last)
       const sigsWithIndex = sigs.map(sig => ({
         sig,
-        txIndex: txIndexMap.get(sig.signature) ?? 0
-      })).sort((a, b) => a.txIndex - b.txIndex);
+        txIndex: txIndexMap.get(sig.signature) ?? undefined
+      })).sort((a, b) => (a.txIndex ?? Number.MAX_SAFE_INTEGER) - (b.txIndex ?? Number.MAX_SAFE_INTEGER));
 
       let batchFailed = false;
       for (const { sig, txIndex } of sigsWithIndex) {

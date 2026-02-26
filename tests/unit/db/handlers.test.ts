@@ -251,7 +251,7 @@ describe("DB Handlers", () => {
             },
             create: expect.objectContaining({
               score: 85,
-              value: 9500n,
+              value: "9500",
               valueDecimals: 2,
               tag1: "quality",
               tag2: "speed",

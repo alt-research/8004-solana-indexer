@@ -8,6 +8,7 @@ enum AgentOrderBy {
   totalFeedback
   qualityScore
   trustTier
+  globalId
 }
 
 enum FeedbackOrderBy {
@@ -64,6 +65,11 @@ input AgentFilter {
   colLocked: Boolean
   parentLocked: Boolean
   trustTier_gte: Int
+  globalId: BigInt
+  globalId_gt: BigInt
+  globalId_lt: BigInt
+  globalId_gte: BigInt
+  globalId_lte: BigInt
 }
 
 input FeedbackFilter {
@@ -104,6 +110,8 @@ type Agent {
   cursor: String!
   chainId: Int!
   agentId: BigInt!
+  globalId: BigInt
+  globalIdFormatted: String
   agentURI: String
   agentURIType: URIType
   owner: String!

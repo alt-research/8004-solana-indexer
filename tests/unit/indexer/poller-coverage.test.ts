@@ -540,7 +540,7 @@ describe("Poller Coverage", () => {
       expect(result).toBeDefined();
     });
 
-    it("should use fallback order when getBlock throws", async () => {
+    it("should return NULL tx_index when getBlock fails after retries", async () => {
       poller = new Poller({
         connection: mockConnection as any,
         prisma: mockPrisma,
@@ -556,9 +556,38 @@ describe("Poller Coverage", () => {
 
       const result = await (poller as any).getTxIndexMap(400, [sig1, sig2]);
 
-      // Fallback: sequential indices
-      expect(result.get("error-a")).toBe(0);
-      expect(result.get("error-b")).toBe(1);
+      // After 3 retries, tx_index is null (not sequential fallback)
+      expect(result.get("error-a")).toBeNull();
+      expect(result.get("error-b")).toBeNull();
+      expect((mockConnection as any).getBlock).toHaveBeenCalledTimes(3);
+    });
+
+    it("should retry and succeed on second attempt", async () => {
+      poller = new Poller({
+        connection: mockConnection as any,
+        prisma: mockPrisma,
+        programId: TEST_PROGRAM_ID,
+        pollingInterval: 100,
+        batchSize: 10,
+      });
+
+      const sig1 = createMockSignatureInfo("retry-a", 500);
+      const sig2 = createMockSignatureInfo("retry-b", 500);
+
+      (mockConnection as any).getBlock = vi.fn()
+        .mockRejectedValueOnce(new Error("Temporary failure"))
+        .mockResolvedValueOnce({
+          transactions: [
+            { transaction: { signatures: ["retry-b"] } },
+            { transaction: { signatures: ["retry-a"] } },
+          ],
+        });
+
+      const result = await (poller as any).getTxIndexMap(500, [sig1, sig2]);
+
+      expect(result.get("retry-b")).toBe(0);
+      expect(result.get("retry-a")).toBe(1);
+      expect((mockConnection as any).getBlock).toHaveBeenCalledTimes(2);
     });
   });
 

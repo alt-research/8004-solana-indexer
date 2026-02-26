@@ -294,6 +294,26 @@ export class WebSocketIndexer {
       // Approximate block time for WebSocket events
       const blockTime = new Date();
 
+      // Resolve tx_index from block for deterministic ordering
+      let txIndex: number | undefined;
+      try {
+        const block = await this.connection.getBlock(ctx.slot, {
+          maxSupportedTransactionVersion: 0,
+          transactionDetails: "full",
+        });
+        if (block?.transactions) {
+          const idx = block.transactions.findIndex(
+            (tx) => tx.transaction.signatures[0] === logs.signature,
+          );
+          if (idx >= 0) txIndex = idx;
+        }
+      } catch (blockError) {
+        logger.debug(
+          { slot: ctx.slot, error: blockError instanceof Error ? blockError.message : String(blockError) },
+          "Failed to resolve tx_index from block (non-fatal)",
+        );
+      }
+
       let allEventsProcessed = true;
 
       for (const event of events) {
@@ -304,6 +324,7 @@ export class WebSocketIndexer {
           signature: logs.signature,
           slot: BigInt(ctx.slot),
           blockTime,
+          txIndex,
         };
 
         let eventProcessed = true;

@@ -25,6 +25,7 @@ export interface AgentRow {
   verified_at: string | null;
   created_at: string;
   updated_at: string;
+  global_id: string | null;
   created_tx_signature: string | null;
   created_slot: string | null;
   feedback_digest: string | null;

@@ -41,6 +41,16 @@ export const agentResolvers = {
     agentId(parent: AgentRow) {
       return numericAgentId(parent.asset).toString();
     },
+    globalId(parent: AgentRow) {
+      return parent.global_id;
+    },
+    globalIdFormatted(parent: AgentRow) {
+      if (!parent.global_id) return null;
+      const id = parseInt(parent.global_id, 10);
+      if (isNaN(id)) return null;
+      const pad = id < 1000 ? 3 : id < 10000 ? 4 : id < 100000 ? 5 : 6;
+      return '#' + String(id).padStart(pad, '0');
+    },
     agentURI(parent: AgentRow) {
       return parent.agent_uri;
     },

@@ -12,6 +12,7 @@ const ORDER_MAP_AGENT: Record<string, string> = {
   totalFeedback: 'feedback_count',
   qualityScore: 'quality_score',
   trustTier: 'trust_tier',
+  globalId: 'global_id',
 };
 
 const ORDER_MAP_FEEDBACK: Record<string, string> = {
@@ -29,6 +30,7 @@ const MAX_LINEAGE_DEPTH = 32;
 const MAX_AGENT_PAGE_SIZE = 1000;
 
 const AGENT_SELECT_WITH_DIGESTS = `a.asset,
+                          a.global_id::text AS global_id,
                           a.owner,
                           a.creator,
                           a.agent_uri,
